@@ -1,0 +1,145 @@
+/* Design tokens: the unified Windows 11 baseline.
+   Appearance, font-size and material conditions key off :root[data-*] set by
+   App.vue from main-process state; component rules in style.css only consume
+   these variables. */
+:root {
+  color-scheme: light;
+  --canvas: #f8f9fb;
+  --surface: #fff;
+  --chrome: #f9fafc;
+  --ink: #21262f;
+  --muted: #505d6d;
+  --subtle: #5e6a79;
+  --line: #dfe4eb;
+  --strong-line: #c1ccd9;
+  --accent: #005fb8;
+  --accent-hover: #004e99;
+  --accent-soft: #e8f2fc;
+  --info: #2c5681;
+  --info-bg: #eaf1fa;
+  --warn: #784c17;
+  --warn-bg: #fbf0db;
+  --danger: #923d35;
+  --danger-bg: #faecea;
+  --focus: #0069cd;
+  --hover: #f4f7fb;
+  --hover-strong: #e9eef5;
+  --nav-selected: #e6ebf2;
+  --tab-selected-bg: #fff;
+  --tab-selected-line: #d4dfe9;
+  --inset: #f3f5f8;
+  --segments-bg: #eaf0f6;
+  --disabled-bg: #eff1f4;
+  --disabled-ink: #657080;
+  --mark-oa-bg: #e6f2e9;
+  --mark-oa-ink: #246446;
+  --mark-gitlab-bg: #e8f2fc;
+  --mark-gitlab-ink: #005fb8;
+  --mark-worktime-bg: #f0e8f6;
+  --mark-worktime-ink: #674579;
+  --mark-zentao-bg: #fbf0db;
+  --mark-zentao-ink: #784c17;
+  --mica-base-fallback: #eef0f3;
+  --scrim: rgb(15 23 32 / .32);
+  --dialog-shadow: 0 18px 48px rgb(10 18 28 / .24);
+  --radius: 4px;
+  --radius-lg: 8px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 28px;
+  --control-height: 34px;
+  --font-scale: 1;
+  --caption-height: 43px;
+  --tab-height: 40px;
+  --source-height: 46px;
+  --sidebar-width: 192px;
+  --font: 'Segoe UI Variable Text', 'Segoe UI Variable', 'Segoe UI', -apple-system, 'Microsoft YaHei UI', 'PingFang SC', sans-serif;
+  --mono: 'Cascadia Mono', 'SFMono-Regular', Consolas, 'Microsoft YaHei UI', monospace;
+  font: calc(14px * var(--font-scale))/1.5 var(--font);
+  color: var(--ink);
+  background: var(--canvas);
+}
+
+:root[data-font-size='small'] { --font-scale: .92; }
+:root[data-font-size='large'] { --font-scale: 1.15; }
+
+/* Dark palette: a near-black neutral scale, not an inversion of light.
+   Elevation reads through brightness — L0 #121418 (content/canvas),
+   L1 #1b1e24 (chrome, solid caption/sidebar base), L2 #252931 (cards,
+   dialog, selected tab) — with faint 1px borders instead of shadow-only
+   separation. Text and accents are softened to hold WCAG AA on every
+   surface they sit on: ink 15:1 on canvas, muted/subtle >= 4.5:1 even on
+   hover-strong, accent/status/mark inks >= 4.5:1 on their own fills.
+   The three native mirrors (canvas/chrome/ink) are duplicated in
+   src/main/materials.ts and pinned by tests/unit/preferences.test.js. */
+:root[data-appearance='dark'] {
+  color-scheme: dark;
+  --canvas: #121418;
+  --surface: #252931;
+  --chrome: #1b1e24;
+  --ink: #e6e8ec;
+  --muted: #a9b1bc;
+  --subtle: #8f97a3;
+  --line: #323843;
+  --strong-line: #414a57;
+  --accent: #8ab4f8;
+  --accent-hover: #a8c7fa;
+  --accent-soft: #1e2a3c;
+  --info: #9cc3f5;
+  --info-bg: #1d2836;
+  --warn: #e2c08d;
+  --warn-bg: #332b1d;
+  --danger: #f0a9a3;
+  --danger-bg: #3b2629;
+  --focus: #9cc3f5;
+  --hover: #2c323b;
+  --hover-strong: #363d49;
+  --nav-selected: #1e2a3c;
+  --tab-selected-bg: #252931;
+  --tab-selected-line: #414a57;
+  --inset: #121418;
+  --segments-bg: #14171d;
+  --disabled-bg: #20242b;
+  --disabled-ink: #7a8290;
+  --mark-oa-bg: #1e2b23;
+  --mark-oa-ink: #a9ddb6;
+  --mark-gitlab-bg: #1d2836;
+  --mark-gitlab-ink: #9cc3f5;
+  --mark-worktime-bg: #2b2438;
+  --mark-worktime-ink: #cdb8e8;
+  --mark-zentao-bg: #332b1d;
+  --mark-zentao-ink: #e2c08d;
+  --mica-base-fallback: #1b1e24;
+  --scrim: rgb(3 5 8 / .55);
+  --dialog-shadow: 0 18px 48px rgb(0 0 0 / .55);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; height: 100%; }
+body { overflow: hidden; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+button:disabled { cursor: default; opacity: .55; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+/* Solid fallbacks when the system asks for less transparency or more contrast;
+   the main process also resolves material to solid from these same queries. */
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
+  :root[data-material='mica'] .workbench,
+  :root[data-material='mica'] .caption,
+  :root[data-material='mica'] .sidebar { background: var(--mica-base-fallback); }
+}
+
+@media (forced-colors: active) {
+  .card, .icon-button, .segments > button, .tab, .side-button[aria-current='page'], .caption-toggle, .settings-entry { border: 1px solid ButtonText; }
+  :focus-visible { outline: 2px solid Highlight; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}

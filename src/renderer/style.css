@@ -1,0 +1,318 @@
+/* Workbench layout and components. Global sheet (imported by main.ts) so
+   appearance/material conditions can key off :root[data-*] and .workbench host
+   classes; all colors come from theme.css tokens. */
+
+@property --sidebar-width {
+  syntax: '<length>';
+  inherits: true;
+  initial-value: 192px;
+}
+.workbench {
+  display: grid;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  grid-template-rows: var(--caption-height) minmax(0, 1fr);
+  grid-template-areas: 'caption caption' 'sidebar workspace';
+  height: 100vh;
+  overflow: hidden;
+  background: var(--mica-base-fallback);
+}
+/* Sidebar width slides between expanded and the 56px rail; the web slot's
+   ResizeObserver re-reports bounds each frame so the native view follows.
+   shell-animated gates the transition until after the first paint so a
+   persisted rail never animates in from the expanded default. */
+.workbench.shell-animated { transition: --sidebar-width 240ms cubic-bezier(0.2, 0, 0, 1); }
+/* Hold the first paint until the initial snapshot lands so a persisted icon
+   rail never flashes as the expanded default. */
+.workbench.shell-pending { visibility: hidden; }
+
+/* Under Mica the workbench stays transparent so the system material shows
+   through; the workspace is opaque. Caption and sidebar are always transparent. */
+:root[data-material='mica'] .workbench { background: transparent; }
+
+/* ── Caption: the shared 43px titlebar; host window controls sit at its edges ── */
+.caption {
+  grid-area: caption;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-2);
+  background: transparent;
+  -webkit-app-region: drag;
+}
+.caption button { -webkit-app-region: no-drag; }
+.caption-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+}
+.caption-toggle:hover { background: var(--hover-strong); }
+.caption-title { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: calc(12px * var(--font-scale)); }
+.caption-glyph { color: var(--accent); }
+.wco-spacer { width: 138px; flex: none; }
+.traffic-spacer { width: 70px; flex: none; }
+
+/* ── Sidebar ── */
+.sidebar {
+  grid-area: sidebar;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: var(--space-3) var(--space-2);
+  background: transparent;
+  overflow: hidden auto;
+}
+/* The group band keeps its height in the rail so icons never shift vertically:
+   the group title becomes a same-height divider (Fluent NavigationView compact
+   convention). */
+.sidebar nav { display: flex; flex-direction: column; }
+/* nowrap keeps the band one line tall even at the rail's 20px content width —
+   wrapped text would grow the band and push the icons down. */
+.group-label { position: relative; margin: var(--space-4) 10px var(--space-1); max-height: 32px; overflow: hidden; white-space: nowrap; color: var(--muted); font-size: calc(12px * var(--font-scale)); }
+.group-label::after { content: ''; position: absolute; left: 50%; top: 50%; width: 16px; height: 1px; background: var(--line); transform: translate(-50%, -50%); opacity: 0; }
+.workbench.shell-animated .group-label { transition: color 120ms ease-out; }
+.workbench.shell-animated .group-label::after { transition: opacity 120ms ease-out; }
+.side-button {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: var(--control-height);
+  margin: 1px 0;
+  padding: 5px 0;
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  overflow: hidden;
+}
+/* Fixed icon zone keeps every icon centred on the 56px rail's centreline
+   (28px) in both states, so icons do not shift while the width slides. */
+.side-icon { display: grid; place-items: center; width: 38px; flex: none; }
+.side-button .label { min-width: 0; overflow: hidden; white-space: nowrap; opacity: 1; visibility: visible; }
+.workbench.shell-animated .side-button .label { transition: opacity 160ms ease-out 120ms, visibility 0s; }
+.side-button:hover:not(:disabled) { background: var(--hover); }
+.side-button[aria-current] { background: var(--nav-selected); }
+.side-button[aria-current]::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 3px;
+  height: 16px;
+  border-radius: 2px;
+  background: var(--accent);
+  transform: translateY(-50%);
+}
+.side-button .icon { color: var(--muted); flex: none; }
+.side-end { margin-top: auto; padding-top: var(--space-3); border-top: 1px solid var(--line); }
+.mode { margin: var(--space-2) 10px 0; max-height: 24px; overflow: hidden; white-space: nowrap; color: var(--subtle); font-size: calc(12px * var(--font-scale)); }
+.workbench.shell-animated .mode { transition: opacity 120ms ease-out, visibility 120ms; }
+
+.mark {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border-radius: 6px;
+  font-size: calc(11px * var(--font-scale));
+  font-weight: 700;
+  color: var(--mark-oa-ink);
+  background: var(--mark-oa-bg);
+}
+.mark[data-site='gitlab'] { color: var(--mark-gitlab-ink); background: var(--mark-gitlab-bg); }
+.mark[data-site='worktime'] { color: var(--mark-worktime-ink); background: var(--mark-worktime-bg); }
+.mark[data-site='zentao'] { color: var(--mark-zentao-ink); background: var(--mark-zentao-bg); }
+
+/* Icon rail: text fades out (leading the width slide) then hides; accessible
+   names stay on the buttons. Bands keep their height so icons never move
+   vertically — the group title is replaced by a divider and the bottom hint
+   keeps its space. */
+.workbench.rail-compact .side-button .label { opacity: 0; visibility: hidden; }
+.workbench.shell-animated.rail-compact .side-button .label { transition: opacity 120ms ease-out, visibility 120ms; }
+.workbench.rail-compact .group-label { color: transparent; }
+.workbench.rail-compact .group-label::after { opacity: 1; }
+.workbench.rail-compact .mode { opacity: 0; visibility: hidden; }
+
+/* ── Workspace and chrome ── */
+.workspace {
+  grid-area: workspace;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--canvas);
+  border-top: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+  border-top-left-radius: var(--radius-lg);
+  overflow: hidden;
+}
+/* DOM order is tabbar then sourcebar; no explicit ordering needed. */
+.chrome { display: flex; flex-direction: column; flex: none; }
+
+.tabbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--tab-height);
+  padding: 0 var(--space-3);
+  min-width: 0;
+}
+.tab-heading { color: var(--muted); font-size: calc(12px * var(--font-scale)); white-space: nowrap; }
+#tabs { display: flex; align-items: center; gap: 6px; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
+.tab { display: flex; align-items: center; flex: none; max-width: 204px; height: 34px; border: 1px solid transparent; border-radius: 7px 7px 0 0; }
+.tab:has([aria-pressed='true']) { background: var(--tab-selected-bg); border-color: var(--tab-selected-line); }
+.tab button { border: 0; background: transparent; }
+.tab-select {
+  max-width: 170px;
+  height: 100%;
+  overflow: hidden;
+  padding: 0 var(--space-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: inherit;
+  font-size: calc(12px * var(--font-scale));
+}
+.tab-close { display: grid; place-items: center; width: 22px; height: 22px; margin-right: 3px; border-radius: 4px; color: var(--muted); }
+.tab-close:hover { background: var(--hover-strong); color: var(--ink); }
+.tab:not(:has([aria-pressed='true'])):hover { background: var(--hover); }
+
+.sourcebar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  height: var(--source-height);
+  padding: 0 var(--space-3);
+  min-width: 0;
+  background: var(--chrome);
+  border-bottom: 1px solid var(--line);
+}
+.browser-tools { display: flex; flex: none; gap: 2px; }
+.icon-button {
+  display: grid;
+  place-items: center;
+  width: var(--control-height);
+  height: var(--control-height);
+  flex: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--ink);
+}
+.icon-button:hover:not(:disabled) { background: var(--hover-strong); }
+.icon-button:disabled { color: var(--disabled-ink); }
+.address {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--inset);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: calc(12px * var(--font-scale));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+.sourcebar [role='status'] {
+  flex: none;
+  max-width: 40%;
+  overflow: hidden;
+  color: var(--info);
+  font-size: calc(12px * var(--font-scale));
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Content cell: the measured web slot plus the dashboard overlay ── */
+.content-cell { position: relative; flex: 1; min-height: 0; }
+.web-slot { position: absolute; inset: 0; }
+.dashboard { position: absolute; inset: 0; overflow: auto; padding: var(--space-6) var(--space-7); background: var(--canvas); }
+.intro { max-width: 640px; margin-bottom: var(--space-5); }
+.intro h1 { margin: 0 0 var(--space-1); font-size: calc(28px * var(--font-scale)); font-weight: 600; line-height: 1.25; }
+.intro p { margin: 0; color: var(--muted); }
+.cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-3); }
+.card {
+  display: grid;
+  justify-items: start;
+  gap: 7px;
+  min-height: 140px;
+  min-width: 0;
+  padding: var(--space-4);
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+}
+.card:hover:not(:disabled) { background: var(--hover); border-color: var(--strong-line); }
+.card:disabled { background: var(--disabled-bg); color: var(--disabled-ink); }
+.card .mark { width: 32px; height: 32px; font-size: calc(12px * var(--font-scale)); }
+.card strong { font-size: calc(15px * var(--font-scale)); }
+.card .description { color: var(--muted); font-size: calc(12px * var(--font-scale)); }
+.card .action { margin-top: auto; color: var(--accent); font-size: calc(12px * var(--font-scale)); }
+#configuration { margin-top: var(--space-4); color: var(--warn); }
+
+@media (max-width: 1000px) {
+  .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 640px) {
+  .cards { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ── Settings dialog ── */
+.dialog-overlay { position: fixed; inset: 0; background: var(--scrim); }
+.dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 10;
+  width: min(560px, calc(100vw - 48px));
+  max-height: calc(100vh - 96px);
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--dialog-shadow);
+}
+.dialog-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-4) var(--space-5) var(--space-2); }
+.dialog-title { margin: 0; font-size: calc(17px * var(--font-scale)); font-weight: 600; }
+.dialog-body { padding: 0 var(--space-5) var(--space-4); }
+.dialog-body > .small { margin: 0 0 var(--space-2); }
+.small { font-size: calc(12px * var(--font-scale)); }
+.muted { color: var(--muted); }
+.preference-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); padding: var(--space-3) 0; border-bottom: 1px solid var(--line); }
+.preference-row:last-child { border-bottom: 0; }
+.preference-row h3 { margin: 0; font-size: calc(13px * var(--font-scale)); font-weight: 600; }
+.preference-row p { margin: 2px 0 0; }
+.segments { display: flex; gap: 2px; flex: none; padding: 2px; background: var(--segments-bg); border-radius: var(--radius); }
+.segments > button {
+  height: calc(var(--control-height) - 6px);
+  padding: 0 var(--space-3);
+  border: 1px solid transparent;
+  border-radius: calc(var(--radius) - 2px);
+  background: transparent;
+  font-size: calc(12px * var(--font-scale));
+  white-space: nowrap;
+}
+.segments > button:hover { background: var(--hover-strong); }
+.segments > button[aria-pressed='true'] { background: var(--surface); border-color: var(--line); color: var(--ink); font-weight: 600; }
+
+/* Honour reduced motion: the sidebar still switches state, just without slide/fade. */
+@media (prefers-reduced-motion: reduce) {
+  .workbench.shell-animated,
+  .workbench.shell-animated .side-button .label,
+  .workbench.shell-animated .group-label,
+  .workbench.shell-animated .group-label::after,
+  .workbench.shell-animated .mode { transition: none; }
+}

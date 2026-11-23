@@ -1,0 +1,9 @@
+node_modules/
+dist/
+out/
+.cache/
+.claude/
+sites.json
+AGENTS.local.md
+docs/
+demo/
