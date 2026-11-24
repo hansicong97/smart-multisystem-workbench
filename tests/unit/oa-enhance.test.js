@@ -114,6 +114,7 @@ test('误餐脚本嵌入规划器、含幂等守卫与两步确认，不调用�
   assert.match(MEAL_FILL_SCRIPT, /function diffMealFill/);
   assert.match(MEAL_FILL_SCRIPT, /__smswMealPeople/);
   assert.match(MEAL_FILL_SCRIPT, /__smswMealConfirmYes/);
-  assert.match(MEAL_FILL_SCRIPT, /__smswMealMin/);
+  assert.match(MEAL_FILL_SCRIPT, /__smswMealToggle/);
+  assert.match(MEAL_FILL_SCRIPT, /function syncToggle/);
   assert.doesNotMatch(MEAL_FILL_SCRIPT, /confirm\(/);
 });

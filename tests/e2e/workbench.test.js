@@ -394,13 +394,18 @@ test('Electron 实窗模拟站验证', { timeout: 110_000 }, async (t) => {
       await doFill();
       assert.equal((await readRows()).length, 4);
 
-      // 收起再展开，输入原样保留。
+      // 同一个右下角按钮收起再展开，输入原样保留，按钮位置不变。
       await form.locator('#__smswMealSkip').fill('2026-10-09');
-      await form.locator('#__smswMealMin').click();
+      const toggleBox = await form.locator('#__smswMealToggle').boundingBox();
+      await form.locator('#__smswMealToggle').click();
       await form.locator('#__smswMealPanel').waitFor({ state: 'hidden' });
-      await form.locator('#__smswMealChip').waitFor({ state: 'visible' });
-      await form.locator('#__smswMealChip').click();
+      assert.deepEqual(await form.locator('#__smswMealToggle').boundingBox(), toggleBox);
+      await form.locator('#__smswMealToggle').click();
       await form.locator('#__smswMealPanel').waitFor({ state: 'visible' });
+      // 面板与按钮同角落：右缘对齐，面板底边在按钮上方。
+      const panelBox = await form.locator('#__smswMealPanel').boundingBox();
+      assert.ok(Math.abs((panelBox.x + panelBox.width) - (toggleBox.x + toggleBox.width)) <= 2);
+      assert.ok(panelBox.y + panelBox.height <= toggleBox.y + 1);
       assert.equal(await form.locator('#__smswMealSkip').inputValue(), '2026-10-09');
       await form.locator('#__smswMealSkip').fill('');
 
@@ -450,7 +455,7 @@ test('Electron 实窗模拟站验证', { timeout: 110_000 }, async (t) => {
       await oa.waitForURL(new URL('/oa/travel', oa.url()).href);
       await byName(form, 'button', '添加一行').waitFor();
       assert.equal(await form.locator('#__smswMealPanel').count(), 0);
-      assert.equal(await form.locator('#__smswMealChip').count(), 0);
+      assert.equal(await form.locator('#__smswMealToggle').count(), 0);
     } finally {
       await oa.evaluate(() => { location.href = '/seeyon/main.do?method=main'; }).catch(() => {});
       await byName(oa, 'link', '查看详情').waitFor().catch(() => {});

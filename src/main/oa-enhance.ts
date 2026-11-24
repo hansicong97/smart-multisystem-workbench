@@ -305,7 +305,7 @@ export const MEAL_FILL_SCRIPT = '(function () {\n'
   var WIN = window;
   var LS_KEY = '__smswMealPeople';
   var PANEL_ID = '__smswMealPanel';
-  var CHIP_ID = '__smswMealChip';
+  var TOGGLE_ID = '__smswMealToggle';
   var roster = [];
   var panel = null;
 
@@ -725,14 +725,15 @@ export const MEAL_FILL_SCRIPT = '(function () {\n'
 
     var box = DOC.createElement('div');
     box.id = PANEL_ID;
-    box.style.cssText = 'position:fixed;top:16px;right:16px;z-index:2147483000;width:320px;background:#fff;'
+    // The panel anchors right above the fixed toggle button (16px margin +
+    // 44px button + 12px gap), so expanding/collapsing happens in one corner.
+    box.style.cssText = 'position:fixed;right:16px;bottom:72px;z-index:2147483000;width:320px;background:#fff;'
       + 'border:1px solid #c9d2dd;border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.18);'
-      + 'max-height:calc(100vh - 32px);overflow:auto;'
+      + 'max-height:calc(100vh - 88px);overflow:auto;'
       + 'font:13px/1.6 Segoe UI,Microsoft YaHei,sans-serif;color:#22303f;padding:12px 14px';
     box.innerHTML = [
       '<div style="display:flex;align-items:center;margin-bottom:8px">',
       '  <b style="flex:1">误餐补贴 · 批量填写</b>',
-      '  <button id="__smswMealMin" type="button" title="收起面板" style="border:1px solid #b9c4d1;background:#fff;border-radius:4px;cursor:pointer;padding:2px 8px">收起</button>',
       '</div>',
       '<div id="__smswMealSummary" style="margin-bottom:6px;padding:5px 6px;background:#f2f7fd;border-radius:4px"></div>',
       '<div style="display:flex;gap:6px;margin-bottom:6px">',
@@ -836,29 +837,35 @@ export const MEAL_FILL_SCRIPT = '(function () {\n'
     };
     box.querySelector('#__smswMealConfirmYes').onclick = executeFill;
     box.querySelector('#__smswMealConfirmNo').onclick = hideConfirm;
-    box.querySelector('#__smswMealMin').onclick = function () {
-      box.style.display = 'none';
-      showChip();
-    };
+    buildToggle();
+    syncToggle();
   }
 
-  function showChip() {
-    var chip = DOC.getElementById(CHIP_ID);
-    if (!chip) {
-      chip = DOC.createElement('div');
-      chip.id = CHIP_ID;
-      chip.textContent = '误餐';
-      chip.title = '误餐补贴批量填写';
-      chip.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2147483000;width:44px;height:44px;'
-        + 'border-radius:50%;background:#3b7de0;color:#fff;font:14px/44px Microsoft YaHei,sans-serif;'
-        + 'text-align:center;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,.25);user-select:none';
-      chip.onclick = function () {
-        chip.style.display = 'none';
-        if (panel) panel.style.display = '';
-      };
-      DOC.body.appendChild(chip);
-    }
-    chip.style.display = '';
+  // One fixed button in the bottom-right corner toggles the panel in both
+  // directions; it never moves, and the panel opens directly above it.
+  function syncToggle() {
+    var t = DOC.getElementById(TOGGLE_ID);
+    if (!t || !panel) return;
+    var open = panel.style.display !== 'none';
+    t.textContent = open ? '✕' : '误餐';
+    t.title = open ? '收起面板' : '展开误餐补贴批量填写';
+    t.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
+  function buildToggle() {
+    if (DOC.getElementById(TOGGLE_ID)) return;
+    var t = DOC.createElement('div');
+    t.id = TOGGLE_ID;
+    t.setAttribute('role', 'button');
+    t.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2147483001;width:44px;height:44px;'
+      + 'border-radius:50%;background:#3b7de0;color:#fff;font:14px/44px Microsoft YaHei,sans-serif;'
+      + 'text-align:center;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,.25);user-select:none';
+    t.onclick = function () {
+      if (!panel) return;
+      panel.style.display = panel.style.display === 'none' ? '' : 'none';
+      syncToggle();
+    };
+    DOC.body.appendChild(t);
   }
 
   function ready() {
