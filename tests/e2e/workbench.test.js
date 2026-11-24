@@ -323,6 +323,140 @@ test('Electron 实窗模拟站验证', { timeout: 110_000 }, async (t) => {
     }
   });
 
+  await t.test('OA 误餐补贴批量填写：默认上月、单人/多人、续填、收起展开', async () => {
+    await byName(shell, 'button', '打开 OA').click();
+    const oa = opened.get('oa');
+    const form = oa.frameLocator('iframe#zwIframe');
+    const pad = (n) => (n < 10 ? '0' : '') + n;
+    const fmt = (d) => d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+    const loadMeal = async () => {
+      await oa.evaluate(() => { location.href = '/oa/meal'; });
+      await oa.waitForURL(new URL('/oa/meal', oa.url()).href);
+      await form.locator('#__smswMealPanel').waitFor();
+    };
+    const setRange = async (s, e) => {
+      await form.locator('#__smswMealStart').fill(s);
+      await form.locator('#__smswMealEnd').fill(e);
+    };
+    const doFill = async () => {
+      await form.locator('#__smswMealFill').click();
+      await form.locator('#__smswMealConfirmYes').click();
+      await retry(async () => assert.match(await form.locator('#__smswMealLog').textContent(), /完成/));
+    };
+    const readRows = () => form.locator('body').evaluate(() =>
+      Array.from(document.querySelectorAll('#formson_200 tr.data-row')).map((tr) => {
+        const cells = tr.querySelectorAll('td');
+        const typeSel = cells[2].querySelector('select');
+        const orgSel = cells[3].querySelector('select');
+        const nameCell = cells[4].querySelector('input[type="hidden"]') ? cells[4] : cells[5];
+        const hid = nameCell.querySelector('input[type="hidden"]');
+        const txt = nameCell.querySelector('input[type="text"]');
+        return {
+          date: cells[1].querySelector('input').value,
+          type: typeSel.options[typeSel.selectedIndex].text,
+          org: orgSel.options[orgSel.selectedIndex].text,
+          personId: hid ? hid.value : '',
+          personName: txt ? txt.value : '',
+          note: cells[9].querySelector('input').value,
+          amount: cells[6].querySelector('.amount').textContent,
+        };
+      }));
+    const total = () => form.locator('body').evaluate(() => document.querySelector('#field0015').textContent);
+
+    try {
+      await byName(oa, 'link', '误餐补贴').click();
+      await oa.waitForURL(new URL('/oa/meal', oa.url()).href);
+      await form.locator('#__smswMealPanel').waitFor();
+
+      // 默认区间为上一个自然月整月，默认用餐人员为申请人。
+      const now = new Date();
+      assert.equal(await form.locator('#__smswMealStart').inputValue(), fmt(new Date(now.getFullYear(), now.getMonth() - 1, 1)));
+      assert.equal(await form.locator('#__smswMealEnd').inputValue(), fmt(new Date(now.getFullYear(), now.getMonth(), 0)));
+      assert.equal(await form.locator('#__smswMealSummary').textContent(), '已选 1 人：张三');
+
+      // 单人填入：2 天 × 2 类 = 4 行，金额与合计重算，必填格黄底转白。
+      await setRange('2026-10-08', '2026-10-09');
+      await form.locator('#__smswMealPreview').click();
+      await retry(async () => assert.match(await form.locator('#__smswMealLog').textContent(), /4 行/));
+      await doFill();
+      let rows = await readRows();
+      assert.equal(rows.length, 4);
+      assert.deepEqual(rows.map((r) => r.date), ['2026-10-08', '2026-10-08', '2026-10-09', '2026-10-09']);
+      assert.deepEqual(rows.map((r) => r.type), ['夜宵补贴', '误正餐补贴', '夜宵补贴', '误正餐补贴']);
+      assert.deepEqual(rows.map((r) => r.amount), ['15.00', '25.00', '15.00', '25.00']);
+      assert.ok(rows.every((r) => r.personId === 'Member|277469390601667094' && r.personName === '张三' && r.org === 'A编'));
+      assert.equal(await total(), '80.00');
+      const dateBg = await form.locator('body').evaluate(() =>
+        document.querySelector('#formson_200 tr.data-row td:nth-child(2) input').style.backgroundColor);
+      assert.equal(dateBg, 'rgb(255, 255, 255)');
+
+      // 同批次重复执行不产生重复行。
+      await doFill();
+      assert.equal((await readRows()).length, 4);
+
+      // 收起再展开，输入原样保留。
+      await form.locator('#__smswMealSkip').fill('2026-10-09');
+      await form.locator('#__smswMealMin').click();
+      await form.locator('#__smswMealPanel').waitFor({ state: 'hidden' });
+      await form.locator('#__smswMealChip').waitFor({ state: 'visible' });
+      await form.locator('#__smswMealChip').click();
+      await form.locator('#__smswMealPanel').waitFor({ state: 'visible' });
+      assert.equal(await form.locator('#__smswMealSkip').inputValue(), '2026-10-09');
+      await form.locator('#__smswMealSkip').fill('');
+
+      // 多人：首行 B 编格选李四 → 读取表单自动识别 B 编；清空后按人员优先填入。
+      await loadMeal();
+      await form.locator('body').evaluate(() => {
+        const cells = document.querySelector('#formson_200 tr.data-row').querySelectorAll('td');
+        cells[5].querySelector('input[type="hidden"]').value = 'Member|222222222222222222';
+        cells[5].querySelector('input[type="text"]').value = '李四';
+      });
+      await form.locator('#__smswMealReadForm').click();
+      await form.locator('#__smswMealRosterToggle').click();
+      assert.equal(await form.locator('#__smswMealRoster select[data-org="222222222222222222"]').inputValue(), 'B编');
+      await setRange('2026-10-08', '2026-10-08');
+      await form.locator('#__smswMealClear').check();
+      await doFill();
+      rows = await readRows();
+      assert.equal(rows.length, 4);
+      assert.deepEqual(rows.map((r) => r.personName), ['张三', '张三', '李四', '李四']);
+      assert.deepEqual(rows.map((r) => r.org), ['A编', 'A编', 'B编', 'B编']);
+      assert.deepEqual(rows.map((r) => r.personId), [
+        'Member|277469390601667094', 'Member|277469390601667094', 'Member|222222222222222222', 'Member|222222222222222222',
+      ]);
+      assert.equal(await total(), '80.00');
+
+      // 续填：预填一行后重开，只补缺行，不重复、不重排。
+      await loadMeal();
+      await form.locator('#__smswMealOnlyMe').click();
+      await form.locator('body').evaluate(() => {
+        const cells = document.querySelector('#formson_200 tr.data-row').querySelectorAll('td');
+        cells[1].querySelector('input').value = '2026-10-08';
+        cells[2].querySelector('select').value = 'night';
+        cells[3].querySelector('select').value = 'A';
+        cells[4].querySelector('input[type="hidden"]').value = 'Member|277469390601667094';
+        cells[4].querySelector('input[type="text"]').value = '张三';
+        cells[2].querySelector('select').dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      await setRange('2026-10-08', '2026-10-09');
+      await doFill();
+      rows = await readRows();
+      assert.equal(rows.length, 4);
+      assert.deepEqual(rows.map((r) => r.date), ['2026-10-08', '2026-10-08', '2026-10-09', '2026-10-09']);
+      assert.deepEqual(rows.map((r) => r.type), ['夜宵补贴', '误正餐补贴', '夜宵补贴', '误正餐补贴']);
+
+      // 差旅表单帧不出现误餐面板或圆钮。
+      await oa.evaluate(() => { location.href = '/oa/travel'; });
+      await oa.waitForURL(new URL('/oa/travel', oa.url()).href);
+      await byName(form, 'button', '添加一行').waitFor();
+      assert.equal(await form.locator('#__smswMealPanel').count(), 0);
+      assert.equal(await form.locator('#__smswMealChip').count(), 0);
+    } finally {
+      await oa.evaluate(() => { location.href = '/seeyon/main.do?method=main'; }).catch(() => {});
+      await byName(oa, 'link', '查看详情').waitFor().catch(() => {});
+    }
+  });
+
   await t.test('同站详情、前进后退和刷新可用，模拟登录保留', async () => {
     for (const [id, name] of apps) {
       await byName(shell, 'button', `打开 ${name}`).click();

@@ -38,6 +38,7 @@ function sitePage(id, route, otherOrigin, signedIn) {
       ${id === 'oa' ? `
         <a href="/ws/entry" target="_blank">进入工时</a>
         <a href="/oa/travel">差旅申请</a>
+        <a href="/oa/meal">误餐补贴</a>
         <a href="/oa/popup" target="_blank">打开链接子页</a>
         <form method="post" action="/oa/post-popup" target="_blank">
           <input type="hidden" name="example" value="synthetic">
@@ -84,6 +85,47 @@ function formPage() {
     </main></body></html>`;
 }
 
+// A writable selectPeople cell (hidden id + readonly text + fieldval span), as
+// left behind after the user picks someone with the form's own people picker.
+function writableName(fieldId, displayName) {
+  const fv = `{name:"${fieldId}",isMasterFiled:"false",displayName:"${displayName}",fieldType:"VARCHAR",inputType:"member",formatType:"1",value:""}`;
+  return `<span id="${fieldId}_span" class="editableSpan edit_class" fieldval='${fv}'>`
+    + `<input type="text" id="${fieldId}_txt" name="${fieldId}_txt" class="xdTextBox" readonly>`
+    + `<input type="hidden" id="${fieldId}" name="${fieldId}">`
+    + '<span class="ico16 radio_people_16 _autoBtn"></span></span>';
+}
+
+// A synthetic CAP4 meal-allowance form: header-keyed detail grid, applicant /
+// undertaker / total fields, and the row toolbar. Served from the same origin
+// inside #zwIframe like the travel form, distinguished by moduleId.
+function mealFormPage() {
+  return `<!doctype html>
+    <html lang="zh-CN"><head><meta charset="utf-8"><title>误餐补贴表单</title>
+    <link rel="stylesheet" href="/fixture.css"><script src="/fixture-meal.js" defer></script></head>
+    <body><main>
+    <p>申请人：<span id="field0003">张三</span></p>
+    <p>承担人：<input type="hidden" id="field0073" value=""><input type="text" id="field0073_txt" value="" aria-label="承担人"></p>
+    <p>合计：<span id="field0015">0.00</span> 元</p>
+    <table class="xdRepeatingTable" id="formson_200">
+      <tr><th>序号</th><th>申请日期</th><th>补贴类型</th><th>用餐人员编制</th><th>姓名（A编）</th><th>姓名（B编）</th><th>补贴金额</th><th>当日已补贴次数来源</th><th>当日已补贴次数</th><th>备注</th></tr>
+      <tr class="data-row">
+        <td class="no">1</td>
+        <td><input type="text" class="xdTextBox date" style="background-color:rgb(252, 221, 139)"></td>
+        <td><select class="type"><option value="">请选择</option><option value="night">夜宵补贴</option><option value="meal">误正餐补贴</option></select></td>
+        <td><select class="org"><option value="">请选择</option><option value="A">A编</option><option value="B">B编</option></select></td>
+        <td>${writableName('field0049', '用餐人员名称-A编')}</td>
+        <td>${writableName('field0050', '用餐人员名称-B编')}</td>
+        <td><span class="amount">0.00</span></td>
+        <td><span class="src"></span></td>
+        <td><span class="cnt">0</span></td>
+        <td><input type="text" class="note"></td>
+      </tr>
+    </table>
+    <button id="meal-clone-row" type="button">克隆新增</button>
+    <button id="delAllImg" type="button">删除全部</button>
+    </main></body></html>`;
+}
+
 function listen(server) {
   return new Promise((resolve, reject) => {
     server.once('error', reject);
@@ -95,7 +137,7 @@ function listen(server) {
 }
 
 export async function startMockSites() {
-  const [style, script, formScript] = await Promise.all(['fixture.css', 'fixture.js', 'fixture-form.js'].map((name) =>
+  const [style, script, formScript, mealScript] = await Promise.all(['fixture.css', 'fixture.js', 'fixture-form.js', 'fixture-meal.js'].map((name) =>
     readFile(new URL(name, import.meta.url), 'utf8'),
   ));
   let siteOrigin;
@@ -124,6 +166,7 @@ export async function startMockSites() {
     if (path === '/fixture.css') return send('text/css', style);
     if (path === '/fixture.js') return send('text/javascript', script);
     if (path === '/fixture-form.js') return send('text/javascript', formScript);
+    if (path === '/fixture-meal.js') return send('text/javascript', mealScript);
     if (path === '/frame') return send('text/html', html('外层 iframe', `
       <a href="${otherOrigin}/oa/popup" target="_blank">从 iframe 打开 OA 子页</a>
       <iframe title="内层 iframe" src="${otherOrigin}/inner-frame"></iframe>`));
@@ -148,7 +191,22 @@ export async function startMockSites() {
       return send('text/html', html('OA 差旅申请', `
         <iframe id="zwIframe" title="表单 iframe" src="${siteOrigin}/seeyon/content/content.do?method=index&moduleId=synthetic-travel"></iframe>`));
     }
-    if (isSite && path === '/seeyon/content/content.do') return send('text/html', formPage());
+    if (isSite && path === '/oa/meal') {
+      if (!signedIn) return redirect(oaLogin);
+      // The batch-fill panel is a tall fixed overlay; give the form frame the
+      // full viewport so the panel (which scrolls internally) stays clickable.
+      return send('text/html', `<!doctype html>
+        <html lang="zh-CN"><head><meta charset="utf-8"><title>OA 误餐补贴</title>
+        <link rel="stylesheet" href="/fixture.css">
+        <style>main{padding:8px}iframe#zwIframe{height:calc(100vh - 16px)}</style></head>
+        <body><main>
+        <iframe id="zwIframe" title="表单 iframe" src="${siteOrigin}/seeyon/content/content.do?method=index&moduleId=synthetic-meal"></iframe>
+        </main></body></html>`);
+    }
+    if (isSite && path === '/seeyon/content/content.do') {
+      const moduleId = new URL(request.url, siteOrigin).searchParams.get('moduleId');
+      return send('text/html', moduleId === 'synthetic-meal' ? mealFormPage() : formPage());
+    }
     if (isSite && path === '/ws/entry') return redirect(signedIn ? timeHome : oaLogin);
     if (isSite && path === timeHome) {
       if (!signedIn) return redirect(oaLogin);

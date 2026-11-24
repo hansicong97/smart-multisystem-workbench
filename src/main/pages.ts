@@ -3,7 +3,7 @@ import type { BrowserWindow, DownloadItem, Event as ElectronEvent, Rectangle, Se
 import { allowsNavigation, APPS, displayAddress } from './sites.js';
 import type { SitePolicy, SiteRegistry } from './sites.js';
 import { describeSitePage, WORKTIME_GUIDANCE } from './site-flow.js';
-import { CITY_SWAP_SCRIPT, isOaFormFrame } from './oa-enhance.js';
+import { CITY_SWAP_SCRIPT, MEAL_FILL_SCRIPT, isOaFormFrame } from './oa-enhance.js';
 import { clampRect } from '../shared/layout.js';
 import type { BoundsRect } from '../shared/layout.js';
 import { IPC } from '../shared/workbench.js';
@@ -318,6 +318,7 @@ export class Pages {
       const frame = webFrameMain.fromId(processId, routingId);
       if (!frame) return;
       frame.executeJavaScript(CITY_SWAP_SCRIPT, true).catch(() => {});
+      frame.executeJavaScript(MEAL_FILL_SCRIPT, true).catch(() => {});
     });
     contents.on('page-title-updated', publish);
     contents.on('render-process-gone', () => {

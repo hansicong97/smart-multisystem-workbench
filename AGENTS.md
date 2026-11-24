@@ -1,6 +1,6 @@
 # SMSW 开发约定
 
-本文件适用于整个项目。以本轮用户需求确定改动范围，用现有源码确认当前行为，用验收记录确认实测结果。四站接入与统一界面（方案 A）已实施（Windows 实窗验收通过，macOS 实机待验收），OA 页面增强已落地首项（差旅表单出发地↔目的地互换）。OA 报销填写、跨系统关联与统计、执行历史及 AI 工具按后续阶段推进。真实站点地址、私有设计稿与本地文档索引见 `AGENTS.local.md`（已 git 忽略，不随仓库发布）。
+本文件适用于整个项目。以本轮用户需求确定改动范围，用现有源码确认当前行为，用验收记录确认实测结果。四站接入与统一界面（方案 A）已实施（Windows 实窗验收通过，macOS 实机待验收），OA 页面增强已落地差旅表单出发地↔目的地互换与误餐补贴批量填写（人员名册、多人续填、面板收起展开）。OA 报销填写、跨系统关联与统计、执行历史及 AI 工具按后续阶段推进。真实站点地址、私有设计稿与本地文档索引见 `AGENTS.local.md`（已 git 忽略，不随仓库发布）。
 
 ## 工程入口
 
@@ -17,7 +17,7 @@
 | `src/main/sites.ts` | 站点清单解析、来源策略和地址栏格式 |
 | `src/main/site-flow.ts` | 工时落点和 OA、禅道登录提示 |
 | `src/main/pages.ts` | `WebContentsView`、标签、会话、弹窗、导航、下载、实测边界、OA 表单帧注入与释放 |
-| `src/main/oa-enhance.ts` | OA 表单帧匹配与城市互换注入脚本（帧主世界执行，不新增网页 IPC） |
+| `src/main/oa-enhance.ts` | OA 表单帧匹配、城市互换与误餐补贴批量填写注入脚本（帧主世界执行，不新增网页 IPC）；含可单测的纯函数规划器 `buildMealPlan`/`diffMealFill` |
 | `src/main/preferences.ts`、`src/main/materials.ts` | 偏好原子持久化、原生材质与窗口配色解析 |
 | `src/shared/workbench.ts` | 应用和来源标识、状态类型、Zod 命令校验 |
 | `src/shared/preferences.ts`、`src/shared/layout.ts` | 偏好类型与校验、侧栏两态布局和边界夹取 |
