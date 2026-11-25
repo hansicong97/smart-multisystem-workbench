@@ -6,12 +6,15 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Pages, SITE_PREFERENCES } from './pages.js';
 import { PreferencesStore } from './preferences.js';
+import { Meal } from './meal.js';
+import { Reimbursement } from './reimbursement/service.js';
 import { overlayColors, resolveMaterial, SOLID_ACCESSIBILITY, windowBackground } from './materials.js';
 import type { AccessibilityFlags } from './materials.js';
 import { mockSites, parseSites } from './sites.js';
 import type { SiteRegistry } from './sites.js';
-import { IPC, uiFromPreferences, workbenchCommand } from '../shared/workbench.js';
+import { ASSISTANT_FRAME, IPC, uiFromPreferences, workbenchCommand } from '../shared/workbench.js';
 import type { WorkbenchState, WorkbenchUi } from '../shared/workbench.js';
+import { mealRequest, reimbursementRequest } from '../shared/assistant.js';
 
 const shellFile = fileURLToPath(new URL('../renderer/index.html', import.meta.url));
 const shellUrl = pathToFileURL(shellFile).href;
@@ -120,6 +123,8 @@ function createWindow(registry: Registry) {
   });
   syncChrome(window, ui);
   const pages = new Pages(window, registry.sites, registry.mode, registry.message, ui);
+  const meal = new Meal(({ context }) => pages.currentAssistant(context, 'meal'));
+  const reimbursements = new Map<string, Reimbursement>();
   const refreshUi = () => {
     const next = currentUi();
     syncChrome(window, next);
@@ -130,11 +135,45 @@ function createWindow(registry: Registry) {
     event.sender === window.webContents && event.senderFrame === window.webContents.mainFrame &&
     event.senderFrame?.url === shellUrl;
 
-  window.webContents.setVisualZoomLevelLimits(1, 1);
-  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  window.webContents.once('dom-ready', () => { void window.webContents.setVisualZoomLevelLimits(1, 1).catch(() => {}); });
+  window.webContents.setWindowOpenHandler(({ url, frameName, postBody }) =>
+    url === 'about:blank' && frameName === ASSISTANT_FRAME && !postBody &&
+    window.webContents.getURL() === shellUrl && pages.currentAssistant()
+      ? pages.assistantView.openHandler(SITE_PREFERENCES)
+      : { action: 'deny' });
   window.webContents.on('will-frame-navigate', (event) => event.preventDefault());
   window.webContents.on('will-redirect', (event) => event.preventDefault());
   ipcMain.handle(IPC.snapshot, (event) => trustedSender(event) ? pages.snapshot() : null);
+  ipcMain.handle(IPC.reimbursement, async (event, request: unknown) => {
+    if (!trustedSender(event)) return { error: '当前页面无法调用报销功能' };
+    const parsed = reimbursementRequest.safeParse(request);
+    if (!parsed.success) return { error: '报销命令无效' };
+    const current = pages.currentAssistant(parsed.data.target, 'reimbursement');
+    if (!current) return { error: '目标 OA 表单已变化，请重新打开助手' };
+    const { documentKey } = current.context;
+    let reimbursement = reimbursements.get(documentKey);
+    if (!reimbursement) {
+      reimbursement = new Reimbursement(window, join(app.getPath('userData'), 'reimbursement-cache'),
+        () => pages.reimbursementTargets(documentKey), (state) => {
+          if (!window.isDestroyed()) window.webContents.send(IPC.reimbursementState, documentKey, state);
+        });
+      reimbursements.set(documentKey, reimbursement);
+    }
+    const { command } = parsed.data;
+    const result = await reimbursement.handle(command);
+    if (command.type === 'preview' || command.type === 'fill') pages.recheckAssistant(current.pageId);
+    return result;
+  });
+  ipcMain.handle(IPC.meal, async (event, request: unknown) => {
+    if (!trustedSender(event)) return { error: '当前页面无法调用误餐补贴' };
+    const parsed = mealRequest.safeParse(request);
+    if (!parsed.success) return { error: '误餐参数无效，请检查日期、补贴类型和人员' };
+    const current = pages.currentAssistant(parsed.data.target, 'meal');
+    if (!current) return { error: '目标 OA 表单已变化，请重新打开助手' };
+    const result = await meal.handle(current, parsed.data.command);
+    if (result.error || parsed.data.command.type === 'fill') pages.recheckAssistant(current.pageId);
+    return result;
+  });
   ipcMain.handle(IPC.command, (event, command: unknown) => {
     if (!trustedSender(event)) return;
     const parsed = workbenchCommand.safeParse(command);
@@ -162,6 +201,9 @@ function createWindow(registry: Registry) {
     nativeTheme.removeListener('updated', refreshUi);
     ipcMain.removeHandler(IPC.snapshot);
     ipcMain.removeHandler(IPC.command);
+    ipcMain.removeHandler(IPC.reimbursement);
+    ipcMain.removeHandler(IPC.meal);
+    for (const reimbursement of reimbursements.values()) reimbursement.dispose();
     pages.dispose();
   });
   // Open maximized by default. Maximize while still hidden (Windows applies it

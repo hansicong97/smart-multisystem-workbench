@@ -1,12 +1,20 @@
 import { z } from 'zod';
 import { FONT_SCALES, preferencesPatch } from './preferences.js';
 import type { Appearance, FontSize, Preferences } from './preferences.js';
+import type { ReimbursementReply, ReimbursementState } from './reimbursement.js';
+import type { MealReply, MealRequest, PageAssistant, ReimbursementRequest } from './assistant.js';
 
 export const APP_IDS = ['oa', 'gitlab', 'worktime', 'zentao'] as const;
 export type AppId = (typeof APP_IDS)[number];
 export type SiteId = Exclude<AppId, 'worktime'>;
 
-export const IPC = { snapshot: 'smsw:snapshot', command: 'smsw:command', state: 'smsw:state' } as const;
+export const IPC = {
+  snapshot: 'smsw:snapshot', command: 'smsw:command', state: 'smsw:state',
+  reimbursement: 'smsw:reimbursement', reimbursementState: 'smsw:reimbursement-state',
+  meal: 'smsw:meal', assistantDismissed: 'smsw:assistant-dismissed',
+} as const;
+
+export const ASSISTANT_FRAME = 'smsw-assistant';
 
 const pageId = z.number().int().positive();
 
@@ -25,6 +33,10 @@ export const workbenchCommand = z.discriminatedUnion('type', [
   z.object({ type: z.enum(['close', 'back', 'forward', 'reload']), id: pageId }),
   z.object({ type: z.literal('setPreference'), patch: preferencesPatch }),
   z.object({ type: z.literal('reportBounds'), rect: boundsRect }),
+  z.object({
+    type: z.literal('reportAssistant'), pageId, revision: z.string().min(1).max(128), rect: boundsRect.nullable(),
+    popover: boundsRect.nullable(), focus: z.boolean(),
+  }),
   z.object({ type: z.literal('setOverlay'), open: z.boolean(), pageId: pageId.nullable() }),
   z.object({
     type: z.literal('reportAccessibility'),
@@ -56,6 +68,7 @@ export interface WorkbenchPage {
   loginHint: string;
   canGoBack: boolean;
   canGoForward: boolean;
+  assistant: PageAssistant | null;
 }
 
 export interface WorkbenchUi {
@@ -99,4 +112,8 @@ export interface WorkbenchApi {
   snapshot(): Promise<WorkbenchState | null>;
   command(value: WorkbenchCommand): Promise<void>;
   onState(listener: (state: WorkbenchState) => void): () => void;
+  reimbursement(value: ReimbursementRequest): Promise<ReimbursementReply>;
+  onReimbursementState(listener: (documentKey: string, state: ReimbursementState) => void): () => void;
+  meal(value: MealRequest): Promise<MealReply>;
+  onAssistantDismissed(listener: (pageId: number, focus: boolean) => void): () => void;
 }

@@ -16,6 +16,7 @@
       <AppIcon name="copy" :size="14" />
     </button>
     <span id="notice" role="status" :title="notice">{{ notice }}</span>
+    <slot name="assistant" />
   </div>
 </template>
 

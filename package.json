@@ -1,7 +1,7 @@
 {
   "name": "smsw",
   "productName": "SMSW",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Smart Multi-System Workbench desktop host prototype",
   "private": true,
   "type": "module",
@@ -18,7 +18,7 @@
     "pretest": "npm run build:main",
     "test": "node --test tests/unit/*.test.js",
     "pretest:e2e": "npm run build",
-    "test:e2e": "node --test tests/e2e/workbench.test.js tests/e2e/ui.test.js",
+    "test:e2e": "node --test --test-concurrency=1 tests/e2e/workbench.test.js tests/e2e/ui.test.js tests/e2e/reimbursement.test.js",
     "test:package": "node --test tests/e2e/packaged.test.js",
     "prepackage": "npm run build",
     "package": "electron-forge package",
@@ -41,6 +41,8 @@
     "vue-tsc": "3.3.14"
   },
   "dependencies": {
+    "@zip.js/zip.js": "2.8.26",
+    "pdfjs-dist": "5.7.284",
     "zod": "4.6.7"
   }
 }

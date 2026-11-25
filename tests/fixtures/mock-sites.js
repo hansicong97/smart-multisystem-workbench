@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import { reimbursementPage } from './reimbursement-form.js';
 
 const labels = { oa: 'OA', gitlab: 'GitLab', zentao: '禅道' };
 const oaLogin = '/seeyon/index.jsp';
@@ -39,6 +40,7 @@ function sitePage(id, route, otherOrigin, signedIn) {
         <a href="/ws/entry" target="_blank">进入工时</a>
         <a href="/oa/travel">差旅申请</a>
         <a href="/oa/meal">误餐补贴</a>
+        <a href="/oa/reimbursement">差旅报销</a>
         <a href="/oa/popup" target="_blank">打开链接子页</a>
         <form method="post" action="/oa/post-popup" target="_blank">
           <input type="hidden" name="example" value="synthetic">
@@ -102,7 +104,7 @@ function mealFormPage() {
   return `<!doctype html>
     <html lang="zh-CN"><head><meta charset="utf-8"><title>误餐补贴表单</title>
     <link rel="stylesheet" href="/fixture.css"><script src="/fixture-meal.js" defer></script></head>
-    <body><main>
+    <body><main data-meal-document="OA-MEAL-001">
     <p>申请人：<span id="field0003">张三</span></p>
     <p>承担人：<input type="hidden" id="field0073" value=""><input type="text" id="field0073_txt" value="" aria-label="承担人"></p>
     <p>合计：<span id="field0015">0.00</span> 元</p>
@@ -137,7 +139,8 @@ function listen(server) {
 }
 
 export async function startMockSites() {
-  const [style, script, formScript, mealScript] = await Promise.all(['fixture.css', 'fixture.js', 'fixture-form.js', 'fixture-meal.js'].map((name) =>
+  const [style, script, formScript, mealScript, reimbursementScript] = await Promise.all(
+    ['fixture.css', 'fixture.js', 'fixture-form.js', 'fixture-meal.js', 'fixture-reimbursement.js'].map((name) =>
     readFile(new URL(name, import.meta.url), 'utf8'),
   ));
   let siteOrigin;
@@ -167,6 +170,7 @@ export async function startMockSites() {
     if (path === '/fixture.js') return send('text/javascript', script);
     if (path === '/fixture-form.js') return send('text/javascript', formScript);
     if (path === '/fixture-meal.js') return send('text/javascript', mealScript);
+    if (path === '/fixture-reimbursement.js') return send('text/javascript', reimbursementScript);
     if (path === '/frame') return send('text/html', html('外层 iframe', `
       <a href="${otherOrigin}/oa/popup" target="_blank">从 iframe 打开 OA 子页</a>
       <iframe title="内层 iframe" src="${otherOrigin}/inner-frame"></iframe>`));
@@ -203,8 +207,20 @@ export async function startMockSites() {
         <iframe id="zwIframe" title="表单 iframe" src="${siteOrigin}/seeyon/content/content.do?method=index&moduleId=synthetic-meal"></iframe>
         </main></body></html>`);
     }
+    if (isSite && path === '/oa/reimbursement') {
+      if (!signedIn) return redirect(oaLogin);
+      const query = new URL(request.url, siteOrigin).searchParams;
+      const mode = query.get('add') === 'clone' ? 'clone' : 'blank';
+      const cap4 = query.get('controls') === 'cap4';
+      const document = query.get('document') === '043' ? '&amp;document=043' : '';
+      return send('text/html', html('OA 差旅报销单',
+        '<input id="subject" aria-label="单据标题" value="' + (cap4 ? '差旅报销 合成模板' : '合成报销单') + '">' +
+        '<iframe id="zwIframe" title="差旅报销表单" src="/seeyon/content/content.do?method=index&amp;moduleId=synthetic-reimbursement&amp;add=' +
+          mode + (cap4 ? '&amp;controls=cap4' : '') + document + '"></iframe>'));
+    }
     if (isSite && path === '/seeyon/content/content.do') {
       const moduleId = new URL(request.url, siteOrigin).searchParams.get('moduleId');
+      if (moduleId === 'synthetic-reimbursement') return send('text/html', reimbursementPage(new URL(request.url, siteOrigin)));
       return send('text/html', moduleId === 'synthetic-meal' ? mealFormPage() : formPage());
     }
     if (isSite && path === '/ws/entry') return redirect(signedIn ? timeHome : oaLogin);

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { CITY_SWAP_SCRIPT, MEAL_FILL_SCRIPT, buildMealPlan, diffMealFill, isOaFormFrame } from '../../dist/main/oa-enhance.js';
+import { CITY_SWAP_SCRIPT, buildMealPlan, diffMealFill, isOaFormFrame, mealFormScript } from '../../dist/main/oa-enhance.js';
 
 test('仅 OA 的 CAP4 表单帧触发增强注入', () => {
   const form = 'https://oa.example.test/seeyon/content/content.do?method=index&moduleId=-123&isFullPage=true';
@@ -108,13 +108,11 @@ test('续填差异：空行不足时计算需新增行数', () => {
   assert.equal(diff.needNew, 3);
 });
 
-test('误餐脚本嵌入规划器、含幂等守卫与两步确认，不调用原生 confirm', () => {
-  assert.match(MEAL_FILL_SCRIPT, /__smswMealFill/);
-  assert.match(MEAL_FILL_SCRIPT, /function buildMealPlan/);
-  assert.match(MEAL_FILL_SCRIPT, /function diffMealFill/);
-  assert.match(MEAL_FILL_SCRIPT, /__smswMealPeople/);
-  assert.match(MEAL_FILL_SCRIPT, /__smswMealConfirmYes/);
-  assert.match(MEAL_FILL_SCRIPT, /__smswMealToggle/);
-  assert.match(MEAL_FILL_SCRIPT, /function syncToggle/);
-  assert.doesNotMatch(MEAL_FILL_SCRIPT, /confirm\(/);
+test('误餐 CAP4 适配沿用原名册并核对表单实例和明细快照', () => {
+  const script = mealFormScript({ type: 'read', instance: 'fixture' });
+  assert.doesNotThrow(() => new Function(script));
+  assert.match(script, /__smswMealPeople/);
+  assert.match(script, /__smswMealForms/);
+  assert.match(script, /JSON\.stringify\(before\) !== JSON\.stringify\(operation\.before\)/);
+  assert.doesNotMatch(script, /__smswMeal(ConfirmYes|Panel|Toggle)|confirm\(/);
 });

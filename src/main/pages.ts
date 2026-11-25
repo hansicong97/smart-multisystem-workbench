@@ -1,13 +1,20 @@
 import { session, webFrameMain, WebContentsView } from 'electron';
 import type { BrowserWindow, DownloadItem, Event as ElectronEvent, Rectangle, Session, WebContents, WebPreferences } from 'electron';
+import { createHash, randomUUID } from 'node:crypto';
 import { allowsNavigation, APPS, displayAddress } from './sites.js';
 import type { SitePolicy, SiteRegistry } from './sites.js';
 import { describeSitePage, WORKTIME_GUIDANCE } from './site-flow.js';
-import { CITY_SWAP_SCRIPT, MEAL_FILL_SCRIPT, isOaFormFrame } from './oa-enhance.js';
+import { CITY_SWAP_SCRIPT, isOaFormFrame } from './oa-enhance.js';
+import { identifyMealForm } from './meal.js';
+import { readForm } from './reimbursement/oa-form.js';
+import { AssistantView } from './assistant-view.js';
 import { clampRect } from '../shared/layout.js';
 import type { BoundsRect } from '../shared/layout.js';
 import { IPC } from '../shared/workbench.js';
 import type { SiteId, WorkbenchCommand, WorkbenchState, WorkbenchUi } from '../shared/workbench.js';
+import type { AssistantTarget, PageAssistant } from '../shared/assistant.js';
+import { sameForm } from './oa-form-target.js';
+import type { AssistantForm, FormIdentity, FormTarget } from './oa-form-target.js';
 
 export const SITE_PREFERENCES = {
   sandbox: true,
@@ -25,14 +32,19 @@ interface Page {
   requestedUrl: string;
   error: string;
   downloads: Set<DownloadItem>;
+  generation: number;
+  assistant: Omit<AssistantForm, 'selection'> | null;
+  assistantProbe?: ReturnType<typeof setTimeout>;
 }
 
 type DownloadListener = (event: ElectronEvent, item: DownloadItem, contents: WebContents | null) => void;
 
 export class Pages {
+  readonly assistantView: AssistantView;
   #pages = new Map<number, Page>();
   #sessions = new Map<SiteId, { browserSession: Session; download: DownloadListener }>();
   #active: number | null = null;
+  #selection = 0;
   #disposed = false;
   #notice = '';
   // The renderer measures the reserved web rectangle; views stay hidden until
@@ -47,12 +59,44 @@ export class Pages {
     private readonly configMessage: string,
     private ui: WorkbenchUi,
   ) {
+    this.assistantView = new AssistantView(window);
     window.on('resize', () => this.#layout());
   }
 
   setUi(ui: WorkbenchUi) {
     this.ui = ui;
     this.#emit();
+  }
+
+  currentAssistant(target?: AssistantTarget, tool?: PageAssistant['tool']): AssistantForm | undefined {
+    const page = this.#active === null ? undefined : this.#pages.get(this.#active);
+    const found = page?.assistant;
+    if (!page || !found || (tool && found.context.tool !== tool) ||
+        (target && (target.pageId !== page.id || target.revision !== found.context.revision))) return;
+    const live = this.#formTargets(page).find(({ frame, generation }) => frame === found.frame && generation === found.generation);
+    if (live) return { ...found, selection: live.selection };
+  }
+
+  reimbursementTargets(documentKey: string): FormTarget[] {
+    const target = this.currentAssistant(undefined, 'reimbursement');
+    return target?.context.documentKey === documentKey ? [target] : [];
+  }
+
+  recheckAssistant(pageId: number) {
+    const page = this.#pages.get(pageId);
+    if (page) this.#scheduleAssistantProbe(page);
+  }
+
+  #formTargets(page: Page): FormTarget[] {
+    if (page.siteId !== 'oa') return [];
+    const contents = page.view.webContents;
+    if (contents.isDestroyed() || !allowsNavigation(page.site, contents.getURL(), true) ||
+        describeSitePage('oa', page.site, contents.getURL()).appId !== 'oa') return [];
+    const mainFrame = contents.mainFrame;
+    return mainFrame.framesInSubtree
+      .filter((frame) => !frame.detached && isOaFormFrame('oa', frame.url) &&
+        allowsNavigation(page.site, frame.url, frame === mainFrame))
+      .map((frame) => ({ pageId: page.id, generation: page.generation, selection: this.#selection, frame }));
   }
 
   snapshot(): WorkbenchState {
@@ -70,6 +114,7 @@ export class Pages {
         error: page.error,
         canGoBack: contents.navigationHistory.canGoBack(),
         canGoForward: contents.navigationHistory.canGoForward(),
+        assistant: page.assistant?.context ?? null,
       };
     });
     return {
@@ -101,7 +146,14 @@ export class Pages {
     }
     if (command.type === 'setOverlay') {
       this.#overlay = command.open ? { pageId: command.pageId } : null;
+      if (command.open && this.#active !== null) this.assistantView.dismiss(this.#active);
       this.#syncVisibility();
+      return;
+    }
+    if (command.type === 'reportAssistant') {
+      const target = this.currentAssistant(command);
+      const page = target && this.#pages.get(target.pageId);
+      if (page && this.#rect && !this.#overlay) this.assistantView.report(command, zoom, page.view.webContents, this.#rect);
       return;
     }
     // Preferences and accessibility are handled by the window host in index.ts.
@@ -146,7 +198,9 @@ export class Pages {
 
   dispose() {
     this.#disposed = true;
-    for (const { view } of this.#pages.values()) {
+    this.assistantView.dispose();
+    for (const { view, assistantProbe } of this.#pages.values()) {
+      clearTimeout(assistantProbe);
       if (!view.webContents.isDestroyed()) view.webContents.close();
     }
     for (const { browserSession, download } of this.#sessions.values()) {
@@ -183,15 +237,79 @@ export class Pages {
 
   #syncVisibility() {
     if (this.#active === null) return;
-    this.#pages.get(this.#active)?.view.setVisible(this.#rect !== null && this.#overlay === null);
+    this.#pages.get(this.#active)?.view.setVisible(
+      this.#rect !== null && this.#rect.width > 0 && this.#rect.height > 0 && this.#overlay === null,
+    );
   }
 
   #select(id: number | null) {
     if (this.#active !== null) this.#pages.get(this.#active)?.view.setVisible(false);
+    if (this.#active !== id) {
+      this.assistantView.hide();
+      this.#selection += 1;
+    }
     this.#active = id;
     this.#layout();
     this.#syncVisibility();
     this.#emit();
+    if (id !== null) this.recheckAssistant(id);
+  }
+
+  #invalidateAssistant(page: Page) {
+    page.generation += 1;
+    clearTimeout(page.assistantProbe);
+    if (!page.assistant) return;
+    page.assistant = null;
+    if (this.#active === page.id) this.assistantView.hide();
+    this.#emit();
+  }
+
+  #scheduleAssistantProbe(page: Page, attempt = 0) {
+    if (this.#disposed || page.siteId !== 'oa') return;
+    clearTimeout(page.assistantProbe);
+    const generation = page.generation;
+    page.assistantProbe = setTimeout(() => { void this.#probeAssistant(page, generation, attempt); }, attempt ? 250 : 0);
+  }
+
+  async #probeAssistant(page: Page, generation: number, attempt: number) {
+    if (this.#disposed || page.generation !== generation || !this.#pages.has(page.id)) return;
+    const targets = this.#formTargets(page);
+    const matches = (await Promise.all(targets.map(async (target) => {
+      const meal = await identifyMealForm(target);
+      if (meal) return { target, form: meal, tool: 'meal' as const };
+      const reimbursement = await readForm(target);
+      return reimbursement ? { target, form: reimbursement, tool: 'reimbursement' as const } : null;
+    }))).filter((match) => match !== null);
+    if (this.#disposed || page.generation !== generation || !this.#pages.has(page.id)) return;
+    const match = matches.length === 1 && this.#formTargets(page).some(({ frame }) => frame === matches[0].target.frame)
+      ? matches[0] : null;
+    if (match) {
+      const documentKey = this.#documentKey(page, match.target, match.tool, match.form);
+      const previous = page.assistant;
+      if (previous?.frame === match.target.frame && sameForm(previous.identity, match.form) &&
+          previous.context.tool === match.tool && previous.context.documentKey === documentKey) return;
+      const { instance, account, accountKey, document, documentId } = match.form;
+      page.assistant = { ...match.target, identity: { instance, account, accountKey, document, documentId }, context: {
+        tool: match.tool, pageId: page.id, documentKey, revision: randomUUID(),
+      } };
+    } else if (page.assistant) {
+      page.assistant = null;
+    } else {
+      if (targets.length && !matches.length && attempt < 40) this.#scheduleAssistantProbe(page, attempt + 1);
+      return;
+    }
+    if (this.#active === page.id) this.assistantView.hide();
+    this.#emit();
+  }
+
+  #documentKey(page: Page, target: FormTarget, tool: PageAssistant['tool'], form: FormIdentity) {
+    const origin = new URL(target.frame.url).origin;
+    const top = new URL(page.view.webContents.getURL()).origin;
+    // Unsaved forms have no stable document number. Keep their draft scoped
+    // to that table instance so another blank form cannot inherit it.
+    return createHash('sha256').update(JSON.stringify([
+      top, origin, tool, form.accountKey || form.account, form.documentId || [page.id, form.instance],
+    ])).digest('hex');
   }
 
   #sessionFor(siteId: SiteId, site: SitePolicy): Session {
@@ -261,7 +379,7 @@ export class Pages {
 
   #register(view: WebContentsView, siteId: SiteId, site: SitePolicy, requestedUrl: string, opener: number | null = null) {
     const contents = view.webContents;
-    const page: Page = { id: contents.id, view, siteId, site, opener, requestedUrl, error: '', downloads: new Set() };
+    const page: Page = { id: contents.id, view, siteId, site, opener, requestedUrl, error: '', downloads: new Set(), generation: 0, assistant: null };
     this.#pages.set(page.id, page);
     view.setVisible(false);
     this.window.contentView.addChildView(view);
@@ -295,6 +413,7 @@ export class Pages {
     });
 
     contents.on('did-start-navigation', (event) => {
+      this.#invalidateAssistant(page);
       if (event.isMainFrame && allowsNavigation(site, event.url, true)) {
         page.requestedUrl = event.url;
         page.error = '';
@@ -306,22 +425,36 @@ export class Pages {
     });
     const publish = () => this.#emit();
     contents.on('did-start-loading', publish);
-    contents.on('did-stop-loading', publish);
+    contents.on('did-stop-loading', () => { publish(); this.#scheduleAssistantProbe(page); });
     contents.on('did-navigate', publish);
-    contents.on('did-navigate-in-page', publish);
+    contents.on('did-navigate-in-page', () => {
+      this.#invalidateAssistant(page);
+      publish();
+      this.#scheduleAssistantProbe(page);
+    });
     // Inject OA form enhancements into the CAP4 form frame's main world. The
     // script self-waits for readiness and observes row changes, so injection
     // timing and server-backed row adds are both covered. The page keeps its
     // sandbox; this adds no IPC from the remote page.
-    contents.on('did-frame-navigate', (_event, url, _code, _text, _isMainFrame, processId, routingId) => {
+    contents.on('did-frame-navigate', (_event, url, _code, _text, isMainFrame, processId, routingId) => {
+      this.#scheduleAssistantProbe(page);
       if (!isOaFormFrame(siteId, url)) return;
       const frame = webFrameMain.fromId(processId, routingId);
-      if (!frame) return;
+      if (!frame || !allowsNavigation(site, contents.getURL(), true) || !allowsNavigation(site, url, isMainFrame)) return;
       frame.executeJavaScript(CITY_SWAP_SCRIPT, true).catch(() => {});
-      frame.executeJavaScript(MEAL_FILL_SCRIPT, true).catch(() => {});
+    });
+    contents.on('before-mouse-event', (_event, input) => {
+      if (input.type === 'mouseDown' && this.assistantView.isPopover(page.id)) this.assistantView.dismiss(page.id);
+    });
+    contents.on('before-input-event', (event, input) => {
+      if (input.type === 'keyDown' && input.key === 'Escape' && this.assistantView.isPopover(page.id)) {
+        event.preventDefault();
+        this.assistantView.dismiss(page.id, true);
+      }
     });
     contents.on('page-title-updated', publish);
     contents.on('render-process-gone', () => {
+      this.#invalidateAssistant(page);
       page.error = '页面进程已退出，请刷新';
       this.#emit();
     });
@@ -334,6 +467,7 @@ export class Pages {
   }
 
   #remove(page: Page) {
+    clearTimeout(page.assistantProbe);
     this.#pages.delete(page.id);
     for (const item of page.downloads) item.cancel();
     if (this.#disposed || this.window.isDestroyed()) return;

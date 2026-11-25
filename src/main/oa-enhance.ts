@@ -165,15 +165,8 @@ export const CITY_SWAP_SCRIPT = String.raw`
 })();
 `;
 
-// ---------------------------------------------------------------------------
-// Meal allowance (误餐补贴) batch fill.
-//
-// The pure planning logic below is written in plain ES5 style with no module
-// references so the compiled function source can be embedded into the injected
-// main-world script via toString() (single source of truth) AND unit-tested
-// directly from dist. The DOM/panel logic lives in MEAL_FILL_SCRIPT and follows
-// the same injection contract as the city swap: main-world, idempotent, no IPC.
-// ---------------------------------------------------------------------------
+// The assistant plans and compares meal rows in the main process. Only the
+// CAP4 form adapter below runs in the OA frame.
 
 export interface MealPerson { id: string; name: string; org: string }
 export interface MealTask {
@@ -295,63 +288,40 @@ export function diffMealFill(existing: MealRowDescriptor[], tasks: MealTask[]): 
   };
 }
 
-export const MEAL_FILL_SCRIPT = '(function () {\n'
-  + 'var buildMealPlan = ' + buildMealPlan.toString() + ';\n'
-  + 'var diffMealFill = ' + diffMealFill.toString() + ';\n'
-  + String.raw`
-  if (window.__smswMealFill) return;
-  window.__smswMealFill = true;
+// CAP4 adapter evaluated by the main process in a matched OA frame.
+// Only the table and the existing origin-local roster are accessed here.
+const MEAL_FORM = String.raw`async function (operation) {
   var DOC = document;
   var WIN = window;
   var LS_KEY = '__smswMealPeople';
-  var PANEL_ID = '__smswMealPanel';
-  var TOGGLE_ID = '__smswMealToggle';
-  var roster = [];
-  var panel = null;
-
   function jq() { return WIN.jQuery || WIN.$; }
   function findTable() {
-    var tables = DOC.querySelectorAll('table');
-    for (var i = 0; i < tables.length; i++) {
-      var t = tables[i].innerText || '';
-      if (t.indexOf('申请日期') > -1 && t.indexOf('补贴类型') > -1 && t.indexOf('用餐人员编制') > -1) return tables[i];
-    }
-    return null;
-  }
-  function readHeader(table) {
-    var trs = table.querySelectorAll('tr');
-    var headerIdx = -1, cells = null;
-    for (var i = 0; i < trs.length; i++) {
-      var txt = trs[i].innerText || '';
-      if (txt.indexOf('申请日期') > -1 && txt.indexOf('序号') > -1) { headerIdx = i; cells = trs[i].querySelectorAll('td,th'); break; }
-    }
-    if (headerIdx < 0) throw new Error('没找到明细表头（申请日期那一行）');
-    var idx = {};
-    for (var c = 0; c < cells.length; c++) {
-      var h = (cells[c].innerText || '').replace(/\s+/g, '');
-      if (/^序号/.test(h)) idx.no = c;
-      else if (/^申请日期/.test(h)) idx.date = c;
-      else if (/^补贴类型/.test(h)) idx.type = c;
-      else if (/^用餐人员编制/.test(h)) idx['编制'] = c;
-      else if (/A编/.test(h)) idx.a = c;
-      else if (/B编/.test(h)) idx.b = c;
-      else if (/^补贴金额/.test(h)) idx.amount = c;
-      else if (/^当日已补贴次数来源/.test(h)) idx.src = c;
-      else if (/^当日已补贴次数/.test(h)) idx.cnt = c;
-      else if (/^备注/.test(h)) idx.note = c;
-    }
-    return { headerIdx: headerIdx, cellCount: cells.length, idx: idx };
+    var matches = [];
+    DOC.querySelectorAll('table').forEach(function (table) {
+      Array.from(table.rows).forEach(function (row) {
+        var idx = {};
+        Array.from(row.cells).forEach(function (cell, i) {
+          var label = (cell.textContent || '').replace(/\s+/g, '');
+          if (/^序号/.test(label)) idx.no = i;
+          else if (/^申请日期/.test(label)) idx.date = i;
+          else if (/^补贴类型/.test(label)) idx.type = i;
+          else if (/^用餐人员编制/.test(label)) idx['编制'] = i;
+          else if (/A编/.test(label)) idx.a = i;
+          else if (/B编/.test(label)) idx.b = i;
+          else if (/^补贴金额/.test(label)) idx.amount = i;
+          else if (/^备注/.test(label)) idx.note = i;
+        });
+        if (['no', 'date', 'type', '编制', 'a', 'b', 'amount'].every(function (key) { return key in idx; })) {
+          matches.push({ table: table, headerIdx: row.rowIndex, cellCount: row.cells.length, idx: idx });
+        }
+      });
+    });
+    return matches.length === 1 ? matches[0] : null;
   }
   function getRows(table, h) {
-    var trs = table.querySelectorAll('tr');
-    var out = [];
-    for (var i = h.headerIdx + 1; i < trs.length; i++) {
-      var tr = trs[i];
-      if (tr.querySelectorAll('td').length !== h.cellCount) continue;
-      if (!tr.querySelector('select')) continue;
-      out.push(tr);
-    }
-    return out;
+    return Array.from(table.rows).slice(h.headerIdx + 1).filter(function (row) {
+      return row.cells.length === h.cellCount && !!row.querySelector('select');
+    });
   }
   function memberVal(v) {
     var s = String(v == null ? '' : v).trim();
@@ -380,33 +350,16 @@ export const MEAL_FILL_SCRIPT = '(function () {\n'
     var name = t ? (t.value || '').trim() : '';
     return (id && name) ? { id: id, name: name, org: 'A编', src: '承担人' } : null;
   }
-  function readRowPerson(table, h) {
-    var rows = getRows(table, h);
-    if (!rows.length) return null;
-    var cells = rows[0].querySelectorAll('td');
-    var cols = [{ idx: h.idx.a, org: 'A编' }, { idx: h.idx.b, org: 'B编' }];
-    for (var i = 0; i < cols.length; i++) {
-      var c = cols[i];
-      if (c.idx == null) continue;
-      var cell = cells[c.idx];
-      if (!cell) continue;
-      var hid = cell.querySelector('input[type="hidden"]');
-      var txt = cell.querySelector('input[type="text"]');
-      var id = hid ? memberVal(hid.value) : null;
-      var name = txt ? (txt.value || '').trim() : '';
-      if (id && name) return { id: id, name: name, org: c.org, src: '表单首行' };
-    }
-    return null;
-  }
   function buildNameCell(aCell) {
     var span = aCell.querySelector('span[id$="_span"]');
     var fieldId = 'field0049';
     if (span && span.id) fieldId = span.id.replace(/_span$/, '');
     else if (aCell.querySelector('span[id]')) fieldId = aCell.querySelector('span[id]').id;
+    if (!/^field\d+$/.test(fieldId)) throw new Error('未识别到人员字段');
     var disp = '用餐人员';
     var fv0 = span ? (span.getAttribute('fieldval') || '') : '';
     var dm = fv0.match(/displayName:\s*"([^"]*)"/);
-    if (dm) disp = dm[1];
+    if (dm && !/[<>&'"\r\n]/.test(dm[1])) disp = dm[1];
     aCell.innerHTML = [
       '<span id="' + fieldId + '_span" class="editableSpan edit_class"',
       ' fieldval=\'{name:"' + fieldId + '",isMasterFiled:"false",displayName:"' + disp + '",',
@@ -443,26 +396,24 @@ export const MEAL_FILL_SCRIPT = '(function () {\n'
     var cells = tr.querySelectorAll('td');
     var idx = h.idx;
     var dt = cells[idx.date].querySelector('input[type="text"]');
-    if (!dt) throw new Error('日期格没有输入框');
-    $(dt).val(task.date);
-    try { WIN.calc(dt); } catch (e) {}
+    if (!dt || dt.readOnly || dt.disabled) throw new Error('日期格没有输入框');
     var selT = cells[idx.type].querySelector('select');
     var txtT = cells[idx.type].querySelector('input[id$="_txt"]');
-    if (selT) {
-      var vt = optionValue(selT, task.type);
-      if (vt === null) throw new Error('补贴类型下拉里没有「' + task.type + '」');
-      $(selT).val(vt);
-      if (txtT) txtT.value = task.type;
-    }
+    var vt = selT && !selT.disabled ? optionValue(selT, task.type) : null;
+    if (vt === null) throw new Error('补贴类型下拉里没有「' + task.type + '」');
     var selB = cells[idx['编制']].querySelector('select');
     var txtB = cells[idx['编制']].querySelector('input[id$="_txt"]');
-    if (selB) {
-      var vb = optionValue(selB, task.org);
-      if (vb === null) throw new Error('编制下拉里没有「' + task.org + '」');
-      $(selB).val(vb);
-      if (txtB) txtB.value = task.org;
-    }
+    var vb = selB && !selB.disabled ? optionValue(selB, task.org) : null;
+    if (vb === null) throw new Error('编制下拉里没有「' + task.org + '」');
+    var note = idx.note == null ? null : cells[idx.note].querySelector('input[type="text"],textarea');
+    if (task.note && (!note || note.readOnly || note.disabled)) throw new Error('该行备注不可编辑');
     var aCell = ensureNameCell(tr, task.org === 'B编' ? idx.b : idx.a);
+    $(dt).val(task.date);
+    try { WIN.calc(dt); } catch (e) {}
+    $(selT).val(vt);
+    if (txtT) txtT.value = task.type;
+    $(selB).val(vb);
+    if (txtB) txtB.value = task.org;
     var v = 'Member|' + task.personId;
     var hid = aCell.querySelector('input[type="hidden"]');
     var txt = aCell.querySelector('input[type="text"]');
@@ -473,15 +424,12 @@ export const MEAL_FILL_SCRIPT = '(function () {\n'
       var fv = span.getAttribute('fieldval') || '';
       span.setAttribute('fieldval', fv.replace(/value:"[^"]*"/, 'value:"' + v + '"'));
     }
-    if (idx.note != null && task.note) {
-      var note = cells[idx.note].querySelector('input[type="text"]');
-      if (note) note.value = task.note;
-    }
+    if (note && task.note) note.value = task.note;
   }
   function fireChange(tr, h) {
     var $ = jq();
     var cells = tr.querySelectorAll('td');
-    [h.idx.date, h.idx.type, h.idx['编制']].forEach(function (i) {
+    [h.idx.date, h.idx.type, h.idx['编制'], h.idx.note].forEach(function (i) {
       if (i == null) return;
       var td = cells[i];
       if (!td) return;
@@ -492,395 +440,200 @@ export const MEAL_FILL_SCRIPT = '(function () {\n'
       if (txt && /252,\s*221,\s*139/.test(txt.getAttribute('style') || '')) txt.style.backgroundColor = '#fff';
     });
   }
-  function addRow(table, h) {
-    var rows = getRows(table, h);
-    var last = rows[rows.length - 1];
-    WIN.addEmpty({ data: { currentNode: last } });
-  }
-  function clearAll(table, h) {
-    var rows = getRows(table, h);
-    if (!rows.length) return;
-    if (WIN.validateRepeatRow && !WIN.validateRepeatRow(jq()(rows[0]))) throw new Error('当前行有未填完的必填项，无法清空');
-    rows[0].click();
-    var btn = DOC.getElementById('delAllImg');
-    if (!btn) throw new Error('找不到「删除全部」按钮');
-    btn.click();
-  }
-  function rowDescriptor(tr, h) {
-    var cells = tr.querySelectorAll('td');
-    var dateEl = cells[h.idx.date] && cells[h.idx.date].querySelector('input[type="text"]');
-    var date = dateEl ? (dateEl.value || '').trim() : '';
-    var typeSel = cells[h.idx.type] && cells[h.idx.type].querySelector('select');
-    var type = typeSel ? ((typeSel.options[typeSel.selectedIndex] || {}).text || '').trim() : '';
-    if (type === '请选择') type = '';
-    var orgSel = cells[h.idx['编制']] && cells[h.idx['编制']].querySelector('select');
-    var org = orgSel ? ((orgSel.options[orgSel.selectedIndex] || {}).text || '').trim() : '';
-    if (org === '请选择') org = '';
-    var personId = '', personName = '';
-    [{ idx: h.idx.a }, { idx: h.idx.b }].forEach(function (c) {
-      if (personId || c.idx == null) return;
-      var cell = cells[c.idx];
-      if (!cell) return;
-      var hid = cell.querySelector('input[type="hidden"]');
-      var txt = cell.querySelector('input[type="text"]');
-      var id = hid ? memberVal(hid.value) : null;
-      if (id) { personId = id; personName = txt ? (txt.value || '').trim() : ''; }
-    });
-    return { date: date, type: type, personId: personId, personName: personName, org: org, empty: !date && !personId };
-  }
-  function readExisting(table, h) {
-    return getRows(table, h).map(function (tr) { return rowDescriptor(tr, h); });
-  }
-  function isEmptyRow(tr, h) { return rowDescriptor(tr, h).empty; }
 
-  // ---- roster persistence ----
-  function loadStored() {
-    try { var r = JSON.parse(localStorage.getItem(LS_KEY) || '[]'); return Array.isArray(r) ? r : []; } catch (e) { return []; }
+  function personAt(row, idx, org) {
+    var cell = row.cells[idx];
+    var id = memberVal(cell.querySelector('input[type=hidden]')?.value);
+    var name = (cell.querySelector('input[id$="_txt"]')?.value || '').trim();
+    return id && name ? { id: id, name: name, org: org } : null;
   }
-  function saveStored() {
-    try {
-      var others = roster.filter(function (p) { return !p.isSelf; })
-        .sort(function (a, b) { return (b.lastUsed || 0) - (a.lastUsed || 0); }).slice(0, 20);
-      localStorage.setItem(LS_KEY, JSON.stringify(others));
-    } catch (e) {}
-  }
-  function findPerson(id) {
-    for (var i = 0; i < roster.length; i++) if (roster[i].id === id) return roster[i];
-    return null;
-  }
-  function upsertPerson(p, checked) {
-    var existing = findPerson(p.id);
-    if (existing) {
-      existing.name = p.name; existing.org = p.org; existing.lastUsed = Date.now();
-      if (checked) existing.checked = true;
-      if (p.src === '申请人') existing.isSelf = true;
-    } else {
-      roster.push({ id: p.id, name: p.name, org: p.org, lastUsed: Date.now(), checked: !!checked, isSelf: p.src === '申请人' });
-    }
-    sortRoster();
-    saveStored();
-  }
-  function sortRoster() {
-    roster.sort(function (a, b) {
-      if (a.isSelf !== b.isSelf) return a.isSelf ? -1 : 1;
-      return (b.lastUsed || 0) - (a.lastUsed || 0);
+  function readRow(row, h) {
+    var idx = h.idx, cells = row.cells;
+    var date = (cells[idx.date].querySelector('input[type=text]')?.value || '').trim();
+    var type = selected(cells[idx.type]);
+    var org = selected(cells[idx['编制']]);
+    var people = [personAt(row, idx.a, 'A编'), personAt(row, idx.b, 'B编')].filter(Boolean);
+    var who = people.find(function (person) { return person.org === org; }) || people[0];
+    var note = idx.note == null ? '' : (cells[idx.note].querySelector('input,textarea')?.value || '').trim();
+    var amount = (cells[idx.amount].querySelector('input:not([type=hidden])')?.value || cells[idx.amount].textContent || '').trim();
+    var controls = Array.from(row.querySelectorAll('input,select,textarea,[fieldval]')).map(function (element) {
+      return [element.id, element.value || '', element.getAttribute('fieldval') || ''];
     });
-  }
-  function initRoster() {
-    roster = [];
-    var self = readApplicant();
-    if (self) roster.push({ id: self.id, name: self.name, org: 'A编', lastUsed: Date.now(), checked: true, isSelf: true });
-    loadStored().forEach(function (p) {
-      if (!p || !p.id || !p.name || findPerson(p.id)) return;
-      roster.push({ id: p.id, name: p.name, org: p.org === 'B编' ? 'B编' : 'A编', lastUsed: p.lastUsed || 0, checked: false, isSelf: false });
+    // A half-filled row belongs to the user, even if its date is blank.
+    var namePresent = [idx.a, idx.b].some(function (i) {
+      return Array.from(cells[i].querySelectorAll('input')).some(function (field) { return !!field.value; }) ||
+        !!(cells[i].querySelector('.xdRichTextBox')?.textContent || '').trim();
     });
-    sortRoster();
-  }
-
-  // ---- panel ----
-  function log(msg) {
-    var el = panel.querySelector('#__smswMealLog');
-    el.textContent += (el.textContent ? '\n' : '') + msg;
-    el.scrollTop = el.scrollHeight;
-  }
-  function updateSummary() {
-    var sel = roster.filter(function (p) { return p.checked; });
-    var el = panel.querySelector('#__smswMealSummary');
-    el.textContent = sel.length ? '已选 ' + sel.length + ' 人：' + sel.map(function (p) { return p.name; }).join('、') : '未选择人员';
-    el.style.color = sel.length ? '#22303f' : '#c0392b';
-  }
-  function renderRoster() {
-    var box = panel.querySelector('#__smswMealRoster');
-    box.innerHTML = '';
-    roster.forEach(function (p) {
-      var row = DOC.createElement('div');
-      row.style.cssText = 'display:flex;align-items:center;gap:6px;margin:3px 0';
-      var label = DOC.createElement('label');
-      label.style.cssText = 'flex:1;display:flex;align-items:center;gap:4px;overflow:hidden';
-      var cb = DOC.createElement('input');
-      cb.type = 'checkbox'; cb.checked = !!p.checked; cb.setAttribute('data-check', p.id);
-      label.appendChild(cb);
-      var nm = DOC.createElement('span');
-      nm.textContent = p.name + (p.isSelf ? '（我）' : '');
-      nm.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
-      label.appendChild(nm);
-      row.appendChild(label);
-      var org = DOC.createElement('select');
-      org.setAttribute('data-org', p.id);
-      ['A编', 'B编'].forEach(function (o) {
-        var op = DOC.createElement('option'); op.value = o; op.textContent = o;
-        if (o === p.org) op.selected = true;
-        org.appendChild(op);
-      });
-      row.appendChild(org);
-      if (!p.isSelf) {
-        var rm = DOC.createElement('button');
-        rm.type = 'button'; rm.textContent = '×'; rm.title = '移除此人';
-        rm.setAttribute('data-remove', p.id);
-        rm.style.cssText = 'border:none;background:none;color:#c0392b;cursor:pointer;font-size:14px';
-        row.appendChild(rm);
-      }
-      box.appendChild(row);
-    });
-    updateSummary();
-  }
-  function readCfg() {
-    var entries = [];
-    if (panel.querySelector('#__smswMealT1').checked) entries.push('夜宵补贴');
-    if (panel.querySelector('#__smswMealT2').checked) entries.push('误正餐补贴');
-    var people = roster.filter(function (p) { return p.checked; })
-      .map(function (p) { return { id: p.id, name: p.name, org: p.org }; });
     return {
-      start: panel.querySelector('#__smswMealStart').value,
-      end: panel.querySelector('#__smswMealEnd').value,
-      skipWeekend: panel.querySelector('#__smswMealWeekend').checked,
-      skipText: panel.querySelector('#__smswMealSkip').value,
-      noteText: panel.querySelector('#__smswMealNote').value,
-      entries: entries, people: people,
-      clearFirst: panel.querySelector('#__smswMealClear').checked,
+      date: date, type: type, personId: who?.id || '', personName: who?.name || '', org: org,
+      empty: !date && !type && !org && !namePresent && !note && Number(amount.replace(/[,¥￥元\s]/g, '')) === 0,
+      note: note, amount: amount, controls: JSON.stringify(controls),
     };
   }
-  function computePending() {
-    var cfg = readCfg();
-    var plan = buildMealPlan(cfg);
-    var table = findTable();
-    if (!table) throw new Error('没找到表单，请先打开一张误餐补贴单');
-    var h = readHeader(table);
-    var diff = diffMealFill(readExisting(table, h), plan.tasks);
-    return { cfg: cfg, plan: plan, diff: diff };
+  function selected(cell) {
+    var select = cell.querySelector('select');
+    var label = (select?.selectedOptions[0]?.text || '').trim();
+    return select?.value && label !== '请选择' ? label : '';
   }
-  function showConfirm(text) {
-    var strip = panel.querySelector('#__smswMealConfirm');
-    panel.querySelector('#__smswMealConfirmText').textContent = text;
-    strip.style.display = 'block';
+  function identity(h) {
+    if (!h || !h.table.isConnected) return null;
+    var self = readApplicant();
+    if (!self) return null;
+    var docId = DOC.querySelector('[data-meal-document]')?.getAttribute('data-meal-document') || '';
+    if (!docId) {
+      var number = Array.from(DOC.querySelectorAll('td')).find(function (cell) {
+        return (cell.textContent || '').trim() === '单据编号';
+      })?.nextElementSibling;
+      docId = (number?.querySelector('input')?.value || number?.textContent || '').trim();
+    }
+    if (['0', '-1', '-', '—'].includes(docId)) docId = '';
+    if (!docId) {
+      var urls = [location.href];
+      try { urls.push(WIN.top.location.href); } catch (e) {}
+      docId = urls.map(function (href) {
+        var params = new URL(href).searchParams;
+        return params.get('summaryId') || params.get('affairId');
+      }).find(function (id) { return id && id !== '0' && id !== '-1'; }) || '';
+    }
+    var instances = WIN.__smswMealForms;
+    if (!instances) instances = WIN.__smswMealForms = new WeakMap();
+    if (!instances.has(h.table)) instances.set(h.table, Date.now().toString(36) + '-' + Math.random().toString(36).slice(2));
+    return { instance: instances.get(h.table), account: self.name, accountKey: self.id, document: docId || '误餐补贴单', documentId: docId };
   }
-  function hideConfirm() { panel.querySelector('#__smswMealConfirm').style.display = 'none'; }
-
-  function ensureRows(table, h, toAdd, done) {
-    if (toAdd <= 0) return done();
-    var target = getRows(table, h).length + toAdd;
-    var guard = 0;
-    (function step() {
-      var n = getRows(table, h).length;
-      if (n >= target) return done();
-      if (guard++ > toAdd + 20) return done(new Error('加行失败，当前只有 ' + n + ' 行'));
-      addRow(table, h);
-      setTimeout(step, 40);
-    })();
+  function snapshot(h) {
+    var id = identity(h);
+    if (!id) return null;
+    return {
+      ...id, total: (DOC.getElementById('field0015')?.textContent || '').trim(),
+      rows: getRows(h.table, h).map(function (row) { return readRow(row, h); }),
+    };
   }
-  function finish(plan, table, filled) {
-    var totalEl = DOC.getElementById('field0015');
-    var total = totalEl ? (totalEl.innerText || totalEl.textContent || '').trim() : '?';
-    plan.byPerson.forEach(function (b) { upsertPerson({ id: b.id, name: b.name, org: b.org, src: '' }, false); });
-    saveStored();
-    log('完成：本次写入 ' + filled + ' 行，表单合计 ' + total + ' 元（预览估算 ' + plan.sum.toFixed(2) + ' 元）');
-    log('请自行核对日期和金额，确认无误后在原网页手动点「发送」。');
-  }
-  function executeFill() {
-    hideConfirm();
-    var pending;
-    try { pending = computePending(); } catch (e) { log('✗ ' + e.message); return; }
-    var cfg = pending.cfg, plan = pending.plan;
-    var table = findTable(); var h = readHeader(table);
+  function getPeople(h) {
+    var self = readApplicant();
+    var fromForm = [readUndertaker()];
+    getRows(h.table, h).forEach(function (row) {
+      fromForm.push(personAt(row, h.idx.a, 'A编'), personAt(row, h.idx.b, 'B编'));
+    });
+    var stored = [];
     try {
-      if (cfg.clearFirst) { clearAll(table, h); table = findTable(); h = readHeader(table); }
-    } catch (e) { log('✗ 清空失败：' + e.message); return; }
-    var diff = diffMealFill(readExisting(table, h), plan.tasks);
-    var need = diff.fillTasks.length;
-    if (!need) { log('没有需要填入的行（已全部匹配）。'); finish(plan, table, 0); return; }
-    if (diff.conflicts.length) log('注意：有 ' + diff.conflicts.length + ' 行内容与本次计划不一致，已保留不动。');
-    var toAdd = Math.max(0, need - diff.emptyCount);
-    log('准备填入 ' + need + ' 行（跳过已填 ' + diff.matchedCount + ' 行，新增 ' + toAdd + ' 行）…');
-    ensureRows(table, h, toAdd, function (err) {
-      if (err) { log('✗ ' + err.message); return; }
-      var rows = getRows(table, h);
-      var emptyRows = rows.filter(function (tr) { return isEmptyRow(tr, h); });
-      var filled = 0, failed = [];
-      diff.fillTasks.forEach(function (task, i) {
-        var tr = emptyRows[i];
-        if (!tr) { failed.push((i + 1) + ' 无可用行'); return; }
-        try { fillRow(tr, h, task); filled++; } catch (e) { failed.push((i + 1) + ' ' + e.message); }
+      var value = JSON.parse(localStorage.getItem(LS_KEY) || '[]');
+      if (Array.isArray(value)) stored = value;
+    } catch (e) {}
+    function roster(input) {
+      var people = [{ id: self.id, name: self.name, org: 'A编', lastUsed: Date.now(), isSelf: true }];
+      input.forEach(function (person) {
+        if (people.length >= 21 || !person || !/^\d{1,24}$/.test(person.id) ||
+            typeof person.name !== 'string' || !person.name.trim() || people.some(function (p) { return p.id === String(person.id); })) return;
+        people.push({
+          id: String(person.id), name: person.name.trim().slice(0, 100), org: person.org === 'B编' ? 'B编' : 'A编',
+          lastUsed: typeof person.lastUsed === 'number' && person.lastUsed > 0 ? person.lastUsed : Date.now(), isSelf: false,
+        });
       });
-      log('已写入 ' + filled + ' 行');
-      if (failed.length) log('✗ 失败：\n' + failed.join('\n'));
-      var k = 0;
-      (function tick() {
-        if (k >= filled) return finish(plan, table, filled);
-        var tr = emptyRows[k];
-        if (tr) { try { fireChange(tr, h); } catch (e) {} }
-        k++;
-        setTimeout(tick, 40);
-      })();
-    });
+      return people;
+    }
+    return { roster: roster(stored), peopleInForm: roster(fromForm) };
+  }
+  function ready(h) {
+    return h && jq() && typeof WIN.addEmpty === 'function' && typeof WIN.calc === 'function' &&
+      getRows(h.table, h).some(function (row) {
+        var date = row.cells[h.idx.date].querySelector('input[type=text]');
+        return date && !date.readOnly && !date.disabled &&
+          !row.cells[h.idx.type].querySelector('select')?.disabled && !row.cells[h.idx['编制']].querySelector('select')?.disabled;
+      });
+  }
+  var h = findTable();
+  if (!ready(h)) return null;
+  var current = identity(h);
+  if (!current || (operation.identity && JSON.stringify(current) !== JSON.stringify(operation.identity))) return null;
+  if (operation.type === 'identify') return current;
+  if (operation.type === 'people') return getPeople(h);
+  if (operation.type === 'savePeople') {
+    var others = operation.people.filter(function (person) { return person.id !== current.accountKey; })
+      .sort(function (a, b) { return b.lastUsed - a.lastUsed; }).slice(0, 20);
+    localStorage.setItem(LS_KEY, JSON.stringify(others));
+    return true;
+  }
+  var before = snapshot(h);
+  if (operation.type === 'read') return before;
+  if (JSON.stringify(before) !== JSON.stringify(operation.before)) return { error: 'OA 明细已变化，请重新预览' };
+
+  function readSameForm() {
+    var next = findTable();
+    if (next?.table !== h.table || JSON.stringify(identity(next)) !== JSON.stringify(current)) return null;
+    return snapshot(next);
+  }
+  function wait(ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); }
+
+  if (operation.type === 'clear') {
+    var first = getRows(h.table, h)[0];
+    var remove = DOC.getElementById('delAllImg');
+    if (!first || !remove || (WIN.validateRepeatRow && !WIN.validateRepeatRow(jq()(first)))) {
+      return { error: '无法通过 OA 清空明细，请在原单处理' };
+    }
+    first.click();
+    remove.click();
+    for (var attempt = 0; attempt < 100; attempt++) {
+      var cleared = readSameForm();
+      if (!cleared) return { error: '清空后 OA 表单已变化，请在原单核对' };
+      if (cleared.rows.length && cleared.rows.every(function (row) { return row.empty; })) return { snapshot: cleared };
+      await wait(50);
+    }
+    return { error: '未读回清空结果，请在原单核对' };
   }
 
-  function buildPanel() {
-    var old = DOC.getElementById(PANEL_ID);
-    if (old) old.parentNode.removeChild(old);
-    var now = new Date();
-    var defEnd = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    var defStart = new Date(defEnd.getFullYear(), defEnd.getMonth(), 1);
-    var defEndDay = new Date(defEnd.getFullYear(), defEnd.getMonth() + 1, 0);
-    function ymd(d) { return d.getFullYear() + '-' + (d.getMonth() + 1 < 10 ? '0' : '') + (d.getMonth() + 1) + '-' + (d.getDate() < 10 ? '0' : '') + d.getDate(); }
-
-    var box = DOC.createElement('div');
-    box.id = PANEL_ID;
-    // The panel anchors right above the fixed toggle button (16px margin +
-    // 44px button + 12px gap), so expanding/collapsing happens in one corner.
-    box.style.cssText = 'position:fixed;right:16px;bottom:72px;z-index:2147483000;width:320px;background:#fff;'
-      + 'border:1px solid #c9d2dd;border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.18);'
-      + 'max-height:calc(100vh - 88px);overflow:auto;'
-      + 'font:13px/1.6 Segoe UI,Microsoft YaHei,sans-serif;color:#22303f;padding:12px 14px';
-    box.innerHTML = [
-      '<div style="display:flex;align-items:center;margin-bottom:8px">',
-      '  <b style="flex:1">误餐补贴 · 批量填写</b>',
-      '</div>',
-      '<div id="__smswMealSummary" style="margin-bottom:6px;padding:5px 6px;background:#f2f7fd;border-radius:4px"></div>',
-      '<div style="display:flex;gap:6px;margin-bottom:6px">',
-      '  <button id="__smswMealRosterToggle" type="button" style="flex:1;border:1px solid #b9c4d1;background:#fff;border-radius:4px;cursor:pointer;padding:3px 8px">人员 ▾</button>',
-      '  <button id="__smswMealReadForm" type="button" title="读取首行姓名格或承担人已选的人" style="border:1px solid #b9c4d1;background:#fff;border-radius:4px;cursor:pointer;padding:3px 8px">读取表单</button>',
-      '  <button id="__smswMealOnlyMe" type="button" style="border:1px solid #b9c4d1;background:#fff;border-radius:4px;cursor:pointer;padding:3px 8px">只选我</button>',
-      '</div>',
-      '<div id="__smswMealRoster" style="display:none;max-height:150px;overflow:auto;border:1px solid #e3e9f0;border-radius:4px;padding:4px 6px;margin-bottom:6px"></div>',
-      '<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">',
-      '  <span style="width:52px;color:#5a6b7d">区间</span>',
-      '  <input id="__smswMealStart" type="date" style="flex:1;min-width:0;padding:3px 4px;border:1px solid #cfd8e3;border-radius:4px">',
-      '  <input id="__smswMealEnd" type="date" style="flex:1;min-width:0;padding:3px 4px;border:1px solid #cfd8e3;border-radius:4px">',
-      '</div>',
-      '<label style="display:block;margin:4px 0"><input id="__smswMealWeekend" type="checkbox" checked> 跳过周六日</label>',
-      '<div style="margin:6px 0 2px;color:#5a6b7d">要跳过的日期（可多段，如 2026-10-01~2026-10-07）</div>',
-      '<textarea id="__smswMealSkip" rows="2" style="width:100%;box-sizing:border-box;border:1px solid #cfd8e3;border-radius:4px;padding:4px 6px;font:inherit"></textarea>',
-      '<div style="margin:6px 0 2px;color:#5a6b7d">加班备注（格式：2026-10-01~2026-10-03 = 国庆加班）</div>',
-      '<textarea id="__smswMealNote" rows="2" style="width:100%;box-sizing:border-box;border:1px solid #cfd8e3;border-radius:4px;padding:4px 6px;font:inherit"></textarea>',
-      '<div style="margin:8px 0 2px;color:#5a6b7d">每天填这些</div>',
-      '<label style="display:inline-block;margin-right:12px"><input id="__smswMealT1" type="checkbox" checked> 夜宵 15</label>',
-      '<label style="display:inline-block"><input id="__smswMealT2" type="checkbox" checked> 正餐 25</label>',
-      '<label style="display:block;margin-top:6px"><input id="__smswMealClear" type="checkbox"> 填入前清空已有明细</label>',
-      '<div style="margin-top:10px;display:flex;gap:8px">',
-      '  <button id="__smswMealPreview" type="button" style="padding:5px 12px;border:1px solid #b9c4d1;background:#f5f8fb;border-radius:4px;cursor:pointer">预览</button>',
-      '  <button id="__smswMealFill" type="button" style="padding:5px 12px;border:1px solid #2f6fd0;background:#3b7de0;color:#fff;border-radius:4px;cursor:pointer">填入</button>',
-      '</div>',
-      '<div id="__smswMealConfirm" style="display:none;margin-top:8px;padding:6px 8px;background:#fff7e6;border:1px solid #f0d9a8;border-radius:4px">',
-      '  <div id="__smswMealConfirmText" style="margin-bottom:6px"></div>',
-      '  <button id="__smswMealConfirmYes" type="button" style="padding:4px 10px;border:1px solid #2f6fd0;background:#3b7de0;color:#fff;border-radius:4px;cursor:pointer">确认填入</button>',
-      '  <button id="__smswMealConfirmNo" type="button" style="margin-left:6px;padding:4px 10px;border:1px solid #b9c4d1;background:#fff;border-radius:4px;cursor:pointer">取消</button>',
-      '</div>',
-      '<div id="__smswMealLog" style="margin-top:8px;max-height:180px;overflow:auto;white-space:pre-wrap;font-size:12px;color:#4a5a6b"></div>'
-    ].join('');
-    DOC.body.appendChild(box);
-    panel = box;
-    box.querySelector('#__smswMealStart').value = ymd(defStart);
-    box.querySelector('#__smswMealEnd').value = ymd(defEndDay);
-
-    initRoster();
-    renderRoster();
-
-    var rosterBox = box.querySelector('#__smswMealRoster');
-    box.querySelector('#__smswMealRosterToggle').onclick = function () {
-      var open = rosterBox.style.display !== 'none';
-      rosterBox.style.display = open ? 'none' : 'block';
-      this.textContent = open ? '人员 ▾' : '人员 ▴';
-    };
-    rosterBox.addEventListener('change', function (ev) {
-      var t = ev.target;
-      var cid = t.getAttribute && t.getAttribute('data-check');
-      var oid = t.getAttribute && t.getAttribute('data-org');
-      if (cid) { var p = findPerson(cid); if (p) { p.checked = t.checked; updateSummary(); } }
-      else if (oid) { var p2 = findPerson(oid); if (p2) { p2.org = t.value; } }
-    });
-    rosterBox.addEventListener('click', function (ev) {
-      var t = ev.target;
-      var rid = t.getAttribute && t.getAttribute('data-remove');
-      if (rid) { roster = roster.filter(function (p) { return p.id !== rid; }); saveStored(); renderRoster(); }
-    });
-    box.querySelector('#__smswMealReadForm').onclick = function () {
-      try {
-        var table = findTable();
-        if (!table) throw new Error('没找到表单，请先打开一张误餐补贴单');
-        var h = readHeader(table);
-        var p = readRowPerson(table, h) || readUndertaker() || readApplicant();
-        if (!p) throw new Error('没读到人员：先用系统选人框在首行姓名格或承担人里选好一个人');
-        upsertPerson(p, true);
-        renderRoster();
-        log('用餐人员 → ' + p.name + '（' + p.src + '，' + p.org + '）');
-      } catch (e) { log('✗ ' + e.message); }
-    };
-    box.querySelector('#__smswMealOnlyMe').onclick = function () {
-      var self = null;
-      roster.forEach(function (p) { p.checked = false; if (p.isSelf) self = p; });
-      if (self) self.checked = true;
-      renderRoster();
-      log(self ? '已改为只填申请人：' + self.name : '⚠ 未读到申请人，请先「读取表单」选人');
-    };
-    box.querySelector('#__smswMealPreview').onclick = function () {
-      panel.querySelector('#__smswMealLog').textContent = '';
-      hideConfirm();
-      try {
-        var pending = computePending();
-        var plan = pending.plan, diff = pending.diff;
-        log('共 ' + plan.days + ' 天，' + plan.rows + ' 行，预计合计 ' + plan.sum.toFixed(2) + ' 元');
-        log('区间：' + plan.first + ' → ' + plan.last);
-        plan.byPerson.forEach(function (b) { log('· ' + b.name + '（' + b.org + '）：' + b.rows + ' 行，' + b.sum.toFixed(2) + ' 元'); });
-        log('已填匹配 ' + diff.matchedCount + ' 行，待填 ' + diff.fillTasks.length + ' 行');
-        if (diff.conflicts.length) log('⚠ ' + diff.conflicts.length + ' 行内容与计划不一致（保留不动，可勾选清空重来）');
-      } catch (e) { log('✗ ' + e.message); }
-    };
-    box.querySelector('#__smswMealFill').onclick = function () {
-      panel.querySelector('#__smswMealLog').textContent = '';
-      try {
-        var pending = computePending();
-        var plan = pending.plan, diff = pending.diff;
-        var names = plan.byPerson.map(function (b) { return b.name + '（' + b.org + '）'; }).join('、');
-        showConfirm('将为 ' + names + ' 填入 ' + diff.fillTasks.length + ' 行（' + plan.days + ' 天，预计 '
-          + plan.sum.toFixed(2) + ' 元，跳过已填 ' + diff.matchedCount + ' 行）。确认？');
-      } catch (e) { log('✗ ' + e.message); }
-    };
-    box.querySelector('#__smswMealConfirmYes').onclick = executeFill;
-    box.querySelector('#__smswMealConfirmNo').onclick = hideConfirm;
-    buildToggle();
-    syncToggle();
+  var expected = before;
+  var index = before.rows.findIndex(function (row) { return row.empty; });
+  if (index < 0) {
+    var existing = getRows(h.table, h);
+    WIN.addEmpty({ data: { currentNode: existing[existing.length - 1] } });
+    for (var attempt = 0; attempt < 100; attempt++) {
+      var after = readSameForm();
+      if (!after) return { error: '新增时 OA 表单已变化，请重新预览' };
+      if (after.rows.length > before.rows.length) {
+        var rows = getRows(h.table, h);
+        index = rows.findIndex(function (row) { return !existing.includes(row); });
+        if (rows.length !== existing.length + 1 || index < 0 || !after.rows[index].empty ||
+            JSON.stringify(after.rows.filter(function (_, i) { return i !== index; })) !== JSON.stringify(before.rows)) {
+          return { error: '新增后 OA 明细发生变化，请在原单核对' };
+        }
+        expected = after;
+        break;
+      }
+      await wait(50);
+    }
+  }
+  var row = getRows(h.table, h)[index];
+  if (!row) return { error: '等待 OA 空白行超时，请核对后重新预览' };
+  try {
+    fillRow(row, h, operation.task);
+    fireChange(row, h);
+  } catch (e) {
+    return { error: e.message || '填写失败，请核对当前明细行' };
   }
 
-  // One fixed button in the bottom-right corner toggles the panel in both
-  // directions; it never moves, and the panel opens directly above it.
-  function syncToggle() {
-    var t = DOC.getElementById(TOGGLE_ID);
-    if (!t || !panel) return;
-    var open = panel.style.display !== 'none';
-    t.textContent = open ? '✕' : '误餐';
-    t.title = open ? '收起面板' : '展开误餐补贴批量填写';
-    t.setAttribute('aria-expanded', open ? 'true' : 'false');
+  var task = operation.task;
+  for (var attempt = 0; attempt < 100; attempt++) {
+    await wait(50);
+    var result = readSameForm();
+    var written = result?.rows[index];
+    if (!written || getRows(h.table, h)[index] !== row) return { error: '回读时 OA 明细行已变化' };
+    // CAP4 recalculates amounts and count displays. Check that no other row's
+    // editable fields were changed while the current row was being written.
+    var fields = function (item) { return [item.date, item.type, item.org, item.personId, item.personName, item.note]; };
+    var other = function (items) { return items.filter(function (_, i) { return i !== index; }).map(fields); };
+    if (JSON.stringify(other(result.rows)) !== JSON.stringify(other(expected.rows))) {
+      return { error: '填写时其他误餐明细发生变化，请在原单核对' };
+    }
+    if (!WIN.calculating && written.date === task.date && written.type === task.type && written.org === task.org &&
+        written.personId === task.personId && written.personName === task.personName && written.note === task.note.trim() &&
+        written.amount !== '' && Number.isFinite(Number(written.amount.replace(/[,¥￥\s]/g, '')))) {
+      return { snapshot: result, index: index };
+    }
   }
-
-  function buildToggle() {
-    if (DOC.getElementById(TOGGLE_ID)) return;
-    var t = DOC.createElement('div');
-    t.id = TOGGLE_ID;
-    t.setAttribute('role', 'button');
-    t.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2147483001;width:44px;height:44px;'
-      + 'border-radius:50%;background:#3b7de0;color:#fff;font:14px/44px Microsoft YaHei,sans-serif;'
-      + 'text-align:center;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,.25);user-select:none';
-    t.onclick = function () {
-      if (!panel) return;
-      panel.style.display = panel.style.display === 'none' ? '' : 'none';
-      syncToggle();
-    };
-    DOC.body.appendChild(t);
-  }
-
-  function ready() {
-    return jq() && typeof WIN.addEmpty === 'function' && findTable();
-  }
-  function start() { buildPanel(); }
-  if (ready()) {
-    start();
-  } else {
-    var tries = 0;
-    var timer = setInterval(function () {
-      tries += 1;
-      if (ready()) { clearInterval(timer); start(); }
-      else if (tries > 100) clearInterval(timer);
-    }, 100);
-  }
-})();
+  return { error: '第 ' + (index + 1) + ' 行回读不一致，请在原单核对后重新预览' };
+}
 `;
+
+export function mealFormScript(operation: object): string {
+  return `(${MEAL_FORM})(${JSON.stringify(operation)})`;
+}

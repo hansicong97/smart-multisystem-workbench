@@ -5,7 +5,20 @@
     <main class="workspace">
       <header class="chrome">
         <TabStrip />
-        <CommandBar />
+        <CommandBar>
+          <template #assistant>
+            <Assistant v-model="assistantOpen" :context="assistant" :web-slot="slot" :large="!!reviewMode"
+              @escape="reimbursement?.returnToOa()">
+              <template #page-tools>
+                <KeepAlive>
+                  <MealPanel v-if="assistant?.tool === 'meal'" :key="assistant.documentKey" :target="assistant" :visible="assistantOpen" />
+                  <ReimbursementPanel v-else-if="assistant?.tool === 'reimbursement'" ref="reimbursement"
+                    :key="assistant.documentKey" v-model:review-mode="reviewMode" :visible="assistantOpen" :target="assistant" />
+                </KeepAlive>
+              </template>
+            </Assistant>
+          </template>
+        </CommandBar>
       </header>
       <div class="content-cell">
         <div ref="slot" class="web-slot" aria-hidden="true"></div>
@@ -22,8 +35,11 @@ import { useAccessibilityReporter } from './accessibility.js';
 import { useBoundsReporter } from './bounds.js';
 import { useSidebar } from './sidebar.js';
 import { useWorkbench } from './store.js';
+import Assistant from './components/Assistant.vue';
 import CommandBar from './components/CommandBar.vue';
 import DashboardHome from './components/DashboardHome.vue';
+import MealPanel from './components/MealPanel.vue';
+import ReimbursementPanel from './components/ReimbursementPanel.vue';
 import SettingsDialog from './components/SettingsDialog.vue';
 import SidebarNav from './components/SidebarNav.vue';
 import TabStrip from './components/TabStrip.vue';
@@ -32,6 +48,12 @@ import TitleBar from './components/TitleBar.vue';
 const { api, state, error, active, ui, dispatch } = useWorkbench();
 const slot = ref<HTMLElement>();
 const settingsOpen = ref(false);
+const assistantOpen = ref(false);
+const reviewMode = ref<'original' | 'review' | null>(null);
+const reimbursement = ref<InstanceType<typeof ReimbursementPanel>>();
+const assistant = computed(() => active.value?.appId === 'oa' && active.value.siteId === 'oa'
+  ? active.value.assistant : null);
+watch(assistantOpen, (open) => { if (!open) reviewMode.value = null; });
 
 const host = computed(() => ui.value?.host ?? 'win32');
 // The 43px caption strip is universal; only the host window controls differ
